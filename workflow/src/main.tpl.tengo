@@ -6,6 +6,7 @@ wf := import("@platforma-sdk/workflow-tengo:workflow")
 exec := import("@platforma-sdk/workflow-tengo:exec")
 assets := import("@platforma-sdk/workflow-tengo:assets")
 ll := import("@platforma-sdk/workflow-tengo:ll")
+maps := import("@platforma-sdk/workflow-tengo:maps")
 json := import("json")
 
 extractSw := assets.importSoftware("@platforma-open/milaboratories.fastq-reader.software:extract-reads")
@@ -48,32 +49,42 @@ wf.body(func(args) {
 		scanCap: 2000000
 	}
 
-	// Collect this sample's read files, keyed by read index. fasta has a single
-	// axis (no read index) — map its single file to "R1" for a uniform UI.
+	// Locate the read-index axis by name — its position varies by dataset
+	// (plain fastq [sampleId, readIndex], multilane [sampleId, lane, readIndex]).
+	// fasta has no such axis; its single file is shown as "R1".
+	readIndexPos := -1
+	for i, ax in spec.axesSpec {
+		if ax.name == "pl7.app/sequencing/readIndex" {
+			readIndexPos = i
+		}
+	}
+
+	// Collect this sample's read files, keyed by read index. Iterate keys in
+	// sorted order so the result is canonical and, for multilane data, the chosen
+	// lane per read index is deterministic (first by sorted key).
+	inputsMap := dataset.data.inputs()
 	filesByReadIndex := {}
-	for sKey, fileRes in dataset.data.inputs() {
+	for sKey in maps.getKeys(inputsMap) {
 		key := json.decode(sKey)
 		if string(key[0]) != args.sampleId {
 			continue
 		}
-		readIndex := len(key) > 1 ? string(key[1]) : "R1"
-		filesByReadIndex[readIndex] = fileRes
+		readIndex := readIndexPos >= 0 ? string(key[readIndexPos]) : "R1"
+		if is_undefined(filesByReadIndex[readIndex]) {
+			filesByReadIndex[readIndex] = inputsMap[sKey]
+		}
 	}
 
 	ll.assert(len(filesByReadIndex) > 0, "no files found for sample %v", args.sampleId)
 
-	// One extraction run per read file. Stable iteration over a fixed order so
-	// the constructed graph is canonical.
+	// One extraction run per read file, over the read indices actually present.
 	outputs := {}
-	for readIndex in ["R1", "R2", "I1", "I2"] {
+	for readIndex in maps.getKeys(filesByReadIndex) {
 		fileRes := filesByReadIndex[readIndex]
-		if is_undefined(fileRes) {
-			continue
-		}
 		inputName := "input." + extension
 		run := exec.builder().
 			software(extractSw).
-			writeFile("params.json", params).
+			writeFile("params.json", string(json.encode(params))).
 			addFile(inputName, fileRes).
 			arg("--input").arg(inputName).
 			arg("--params").arg("params.json").

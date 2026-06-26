@@ -7,6 +7,34 @@ export type SelectionMode = "range" | "numbers" | "headers" | "pattern";
 const MAX_READS = 5000;
 
 const FASTQ_EXTENSIONS = new Set(["fastq", "fastq.gz", "fasta", "fasta.gz"]);
+const FASTA_EXTENSIONS = new Set(["fasta", "fasta.gz"]);
+const READ_INDEX_AXIS = "pl7.app/sequencing/readIndex";
+
+/**
+ * Read indices a dataset exposes. fastq variants carry a `pl7.app/sequencing/readIndex`
+ * axis (found by name — its position varies: [sampleId, readIndex] for plain fastq,
+ * [sampleId, lane, readIndex] for multilane); fasta is single-axis → one read file.
+ */
+function readIndicesFromSpec(spec: {
+  axesSpec: { name: string; domain?: Record<string, string> }[];
+}): string[] {
+  const axis = spec.axesSpec.find((a) => a.name === READ_INDEX_AXIS);
+  if (!axis) return ["R1"];
+  const raw = axis.domain?.["pl7.app/readIndices"];
+  if (!raw) return ["R1"];
+  try {
+    const parsed = JSON.parse(raw) as string[];
+    return parsed.length > 0 ? parsed : ["R1"];
+  } catch {
+    return ["R1"];
+  }
+}
+
+/** NaN-safe clamp — a cleared number field surfaces as NaN, which must not leak into args. */
+function clampInt(value: number, min: number, max: number, fallback: number): number {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(value)));
+}
 
 /** UI-shaped, persisted state. View toggles live here and never reach the workflow. */
 export type BlockData = {
@@ -26,6 +54,7 @@ export type BlockData = {
   // view-only state
   pairedView: "R1" | "R2" | "both";
   contentView: "full" | "sequence";
+  settingsOpen: boolean;
 };
 
 /** Projected workflow input. */
@@ -94,6 +123,7 @@ const dataModel = new DataModelBuilder().from<BlockData>("v1").init(() => ({
   pattern: "",
   pairedView: "both",
   contentView: "full",
+  settingsOpen: true,
 }));
 
 export const platforma = BlockModelV3.create(dataModel)
@@ -106,8 +136,8 @@ export const platforma = BlockModelV3.create(dataModel)
     const numbers = parseNumbers(data.readNumbers);
     const headers = parseHeaders(data.readHeaders);
     const pattern = data.pattern.trim();
-    const count = Math.max(1, Math.min(MAX_READS, Math.floor(data.count)));
-    const startFrom = Math.max(1, Math.floor(data.startFrom));
+    const count = clampInt(data.count, 1, MAX_READS, 10);
+    const startFrom = clampInt(data.startFrom, 1, Number.MAX_SAFE_INTEGER, 1);
 
     if (mode === "numbers" && numbers.length === 0)
       throw new Error("Enter at least one read number");
@@ -152,41 +182,61 @@ export const platforma = BlockModelV3.create(dataModel)
     }),
   )
 
-  // Sample dropdown — labels for the sample-id axis of the chosen dataset.
+  // Sample dropdown — only the samples that belong to the chosen dataset.
+  // `findLabels` is project-wide (every value of the sample-id axis across all
+  // datasets), so we intersect it with this dataset's own sample ids, which the
+  // column publishes in its `pl7.app/axisKeys/0` annotation.
   .output("sampleOptions", (ctx): SampleOption[] | undefined => {
     if (!ctx.data.inputRef) return undefined;
     const spec = ctx.resultPool.getPColumnSpecByRef(ctx.data.inputRef);
     if (!spec) return undefined;
-    const labels = ctx.findLabels(spec.axesSpec[0]);
-    if (!labels) return undefined;
-    return Object.entries(labels)
-      .map(([value, label]) => ({ value: String(value), label }))
+    const labels = ctx.findLabels(spec.axesSpec[0]) ?? {};
+
+    let ids: string[] | undefined;
+    const raw = spec.annotations?.["pl7.app/axisKeys/0"];
+    if (raw) {
+      try {
+        ids = (JSON.parse(raw) as (string | number)[]).map(String);
+      } catch {
+        ids = undefined;
+      }
+    }
+    // Fallback: if the annotation is missing/unparseable, fall back to all labels.
+    if (!ids) ids = Object.keys(labels);
+
+    return ids
+      .map((id) => ({ value: id, label: labels[id] ?? id }))
       .sort((a, b) => a.label.localeCompare(b.label));
   })
 
-  // Read indices present in the dataset. fastq carries them on axis 1; fasta is
-  // single-axis and treated as one read file ("R1").
+  // Read indices present in the dataset.
   .output("readIndices", (ctx): string[] | undefined => {
     if (!ctx.data.inputRef) return undefined;
     const spec = ctx.resultPool.getPColumnSpecByRef(ctx.data.inputRef);
     if (!spec) return undefined;
-    if (spec.axesSpec.length < 2) return ["R1"];
-    const raw = spec.axesSpec[1].domain?.["pl7.app/readIndices"];
-    if (!raw) return ["R1"];
-    try {
-      const parsed = JSON.parse(raw) as string[];
-      return parsed.length > 0 ? parsed : ["R1"];
-    } catch {
-      return ["R1"];
-    }
+    return readIndicesFromSpec(spec);
   })
 
-  // Extracted reads, keyed by read index (R1, R2, …).
+  // Whether the dataset is FASTA (no per-base quality) — drives viewer presentation.
+  .output("isFasta", (ctx): boolean | undefined => {
+    if (!ctx.data.inputRef) return undefined;
+    const spec = ctx.resultPool.getPColumnSpecByRef(ctx.data.inputRef);
+    const ext = spec?.domain?.["pl7.app/fileExtension"];
+    return ext !== undefined && FASTA_EXTENSIONS.has(ext);
+  })
+
+  // Extracted reads, keyed by read index. Resolve only the indices the dataset
+  // actually has, with permanent-absence + non-throwing JSON read so a single-end
+  // sample (only reads_R1) or an still-computing run doesn't error the output.
   .output("reads", (ctx): Record<string, ReadsResult> | undefined => {
-    if (!ctx.outputs) return undefined;
+    if (!ctx.outputs || !ctx.data.inputRef) return undefined;
+    const spec = ctx.resultPool.getPColumnSpecByRef(ctx.data.inputRef);
+    const indices = spec ? readIndicesFromSpec(spec) : ["R1"];
     const out: Record<string, ReadsResult> = {};
-    for (const ri of ["R1", "R2", "I1", "I2"]) {
-      const res = ctx.outputs.resolve(`reads_${ri}`)?.getDataAsJson<ReadsResult>();
+    for (const ri of indices) {
+      const res = ctx.outputs
+        .resolve({ field: `reads_${ri}`, allowPermanentAbsence: true })
+        ?.getDataAsJson<ReadsResult>();
       if (res) out[ri] = res;
     }
     return Object.keys(out).length > 0 ? out : undefined;

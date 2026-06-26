@@ -20,7 +20,11 @@ const reads = computed<Record<string, ReadsResult> | undefined>(() => app.model.
 const availableIndices = computed<string[]>(() => {
   const r = reads.value;
   if (!r) return [];
-  return READ_INDEX_ORDER.filter((ri) => r[ri] !== undefined);
+  const known = READ_INDEX_ORDER.filter((ri) => r[ri] !== undefined);
+  const extra = Object.keys(r)
+    .filter((k) => !READ_INDEX_ORDER.includes(k))
+    .sort();
+  return [...known, ...extra];
 });
 
 const isPaired = computed(
@@ -46,12 +50,9 @@ const maxRows = computed(() =>
   Math.max(0, ...shownIndices.value.map((ri) => reads.value?.[ri]?.reads.length ?? 0)),
 );
 
-const isFasta = computed(() => {
-  // fasta records carry no quality string
-  const first = shownIndices.value[0];
-  const rec = first ? reads.value?.[first]?.reads[0] : undefined;
-  return rec !== undefined && rec.quality === undefined;
-});
+// Derived from the dataset spec (not inferred from a read), so it's correct even
+// when the current selection returns zero reads.
+const isFasta = computed(() => app.model.outputs.isFasta ?? false);
 
 function recordLines(rec: ReadRecord | undefined): string[] {
   if (!rec) return [];
@@ -93,16 +94,22 @@ const notices = computed<Notice[]>(() => {
         text: `${ri}: headers not found: ${res.notFoundHeaders.join(", ")}.`,
       });
   }
-  if (
-    isPaired.value &&
-    app.model.data.pairedView === "both" &&
-    app.model.data.selectionMode === "range" &&
-    app.model.data.randomize
-  ) {
-    out.push({
-      type: "info",
-      text: "Under Randomize, R1 and R2 are independent random samples — not mates. Use sequential range or read numbers to see aligned pairs.",
-    });
+  // The two columns are aligned by row index. Pairs are true mates only when the
+  // same ordinals are read from each file — i.e. sequential range or read-numbers.
+  // Randomize, headers, and pattern match each mate independently, so warn.
+  if (isPaired.value && app.model.data.pairedView === "both") {
+    const mode = app.model.data.selectionMode;
+    if (mode === "range" && app.model.data.randomize) {
+      out.push({
+        type: "info",
+        text: "Under Randomize, R1 and R2 are independent random samples — not mates. Use sequential range or read numbers to see aligned pairs.",
+      });
+    } else if (mode === "headers" || mode === "pattern") {
+      out.push({
+        type: "info",
+        text: "In this mode R1 and R2 are matched independently, so reads shown side by side may not be mates. Use sequential range or read numbers for aligned pairs.",
+      });
+    }
   }
   return out;
 });

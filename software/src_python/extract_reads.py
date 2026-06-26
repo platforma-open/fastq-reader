@@ -35,10 +35,15 @@ def iter_fastq(fh):
         if not h:
             return
         seq = fh.readline()
-        fh.readline()  # '+' separator
+        plus = fh.readline()
         qual = fh.readline()
         if not qual:
             return  # truncated trailing record
+        # Validate the 4-line framing rather than trusting it. Without this, a
+        # desynced or mis-detected (e.g. FASTA-as-FASTQ) stream would silently
+        # pair the wrong header/sequence/quality. Stop instead of emitting garbage.
+        if not h.startswith("@") or not plus.startswith("+"):
+            return
         yield (h[1:].rstrip("\n\r"), seq.rstrip("\n\r"), qual.rstrip("\n\r"))
 
 
@@ -123,22 +128,29 @@ def mode_range_sequential(path, fmt, gzipped, start, count, em):
             break
 
 
-def mode_numbers(path, fmt, gzipped, numbers, em):
+def mode_numbers(path, fmt, gzipped, numbers, scan_cap, em):
     if not numbers:
-        return
+        return {"scannedToCap": False}
     wanted = set(numbers)
     max_n = max(wanted)
+    scanned_to_cap = False
     for n, (header, seq, qual) in enumerate(records(path, fmt, gzipped), 1):
+        # A huge requested ordinal must not force a full-file scan.
+        if n > scan_cap:
+            scanned_to_cap = True
+            break
         if n in wanted:
             em.add(n, header, seq, qual)
             wanted.discard(n)
         if not wanted or n >= max_n or em.full():
             break
+    return {"scannedToCap": scanned_to_cap}
 
 
 def _header_matches(header, target):
-    # exact, id-prefix (first whitespace token), or string-prefix
-    return header == target or header.split()[0:1] == [target] or header.startswith(target)
+    # exact full header, or exact match on the read id (first whitespace token).
+    # Deliberately NOT a prefix match: "read1" must not match "read10".
+    return header == target or header.split()[0:1] == [target]
 
 
 def mode_headers(path, fmt, gzipped, headers, scan_cap, em):
@@ -315,7 +327,7 @@ def main():
             mode_range_sequential(a.input, fmt, gzipped, start, count, em)
     elif mode == "numbers":
         nums = [int(x) for x in p.get("numbers", [])]
-        mode_numbers(a.input, fmt, gzipped, nums, em)
+        meta = mode_numbers(a.input, fmt, gzipped, nums, scan_cap, em)
     elif mode == "headers":
         meta = mode_headers(a.input, fmt, gzipped, p.get("headers", []), scan_cap, em)
     elif mode == "pattern":
