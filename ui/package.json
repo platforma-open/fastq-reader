@@ -1,0 +1,27 @@
+{
+  "name": "@platforma-open/milaboratories.fastq-reader.ui",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "fmt": "ts-builder format",
+    "dev": "ts-builder serve --target browser",
+    "watch": "ts-builder build --target browser --watch",
+    "build": "ts-builder build --target browser",
+    "check": "ts-builder check --target browser"
+  },
+  "dependencies": {
+    "@platforma-open/milaboratories.fastq-reader.model": "workspace:*",
+    "@platforma-sdk/model": "catalog:",
+    "@platforma-sdk/ui-vue": "catalog:"
+  },
+  "devDependencies": {
+    "@milaboratories/ts-builder": "catalog:",
+    "@milaboratories/ts-configs": "catalog:"
+  },
+  "peerDependencies": {
+    "typescript": "*",
+    "vite": "*",
+    "vitest": "*",
+    "vue": "*"
+  }
+}

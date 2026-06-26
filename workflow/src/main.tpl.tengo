@@ -1,0 +1,93 @@
+// FASTQ Reader — extract a small selection of reads for one sample and expose
+// them to the UI. Only the selected sample's read files are processed; the
+// extraction tool streams the input and never reads/emits whole files.
+
+wf := import("@platforma-sdk/workflow-tengo:workflow")
+exec := import("@platforma-sdk/workflow-tengo:exec")
+assets := import("@platforma-sdk/workflow-tengo:assets")
+ll := import("@platforma-sdk/workflow-tengo:ll")
+json := import("json")
+
+extractSw := assets.importSoftware("@platforma-open/milaboratories.fastq-reader.software:extract-reads")
+
+// Resolve the dataset column (spec + resource map of File handles). Blob
+// contents are not read here — only handles — so this stays cheap on large data.
+wf.prepare(func(args) {
+	return {
+		dataset: wf.resolve(args.inputRef, { errIfMissing: true })
+	}
+})
+
+wf.body(func(args) {
+	ll.assert(!is_undefined(args.inputRef), "input dataset is required")
+	ll.assert(!is_undefined(args.sampleId) && args.sampleId != "", "sample is required")
+
+	dataset := args.dataset
+	spec := dataset.spec
+
+	extension := spec.domain["pl7.app/fileExtension"] // fastq | fastq.gz | fasta | fasta.gz
+	ll.assert(!is_undefined(extension), "dataset has no pl7.app/fileExtension domain")
+	isFasta := extension == "fasta" || extension == "fasta.gz"
+	format := isFasta ? "fasta" : "fastq"
+	gzipped := extension == "fastq.gz" || extension == "fasta.gz"
+
+	// Selection params for the extraction tool (see software/src_python/extract_reads.py).
+	params := {
+		format: format,
+		gzipped: gzipped,
+		mode: args.selectionMode,
+		count: args.count,
+		start: args.startFrom,
+		randomize: args.randomize,
+		seed: 42,
+		numbers: args.readNumbers,
+		headers: args.readHeaders,
+		pattern: args.pattern,
+		maxReads: args.maxReads,
+		maxSeqLen: 2000,
+		scanCap: 2000000
+	}
+
+	// Collect this sample's read files, keyed by read index. fasta has a single
+	// axis (no read index) — map its single file to "R1" for a uniform UI.
+	filesByReadIndex := {}
+	for sKey, fileRes in dataset.data.inputs() {
+		key := json.decode(sKey)
+		if string(key[0]) != args.sampleId {
+			continue
+		}
+		readIndex := len(key) > 1 ? string(key[1]) : "R1"
+		filesByReadIndex[readIndex] = fileRes
+	}
+
+	ll.assert(len(filesByReadIndex) > 0, "no files found for sample %v", args.sampleId)
+
+	// One extraction run per read file. Stable iteration over a fixed order so
+	// the constructed graph is canonical.
+	outputs := {}
+	for readIndex in ["R1", "R2", "I1", "I2"] {
+		fileRes := filesByReadIndex[readIndex]
+		if is_undefined(fileRes) {
+			continue
+		}
+		inputName := "input." + extension
+		run := exec.builder().
+			software(extractSw).
+			writeFile("params.json", params).
+			addFile(inputName, fileRes).
+			arg("--input").arg(inputName).
+			arg("--params").arg("params.json").
+			arg("--output").arg("reads.json").
+			saveFileContent("reads.json").
+			printErrStreamToStdout().
+			cache(24 * 60 * 60 * 1000).
+			run()
+
+		outputs["reads_" + readIndex] = run.getFileContent("reads.json")
+	}
+
+	return {
+		outputs: outputs,
+		exports: {}
+	}
+})
