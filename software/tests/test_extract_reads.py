@@ -16,7 +16,7 @@ import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-TOOL = os.path.join(HERE, "extract_reads.py")
+TOOL = os.path.join(HERE, "..", "src_python", "extract_reads.py")
 
 
 def write_fastq(path, n, gzipped=False, seq_for=None):

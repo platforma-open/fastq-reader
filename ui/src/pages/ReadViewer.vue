@@ -16,6 +16,8 @@ const contentOptions: ListOption<"full" | "sequence">[] = [
 
 const reads = computed<Record<string, ReadsResult> | undefined>(() => app.model.outputs.reads);
 
+const isRunning = computed(() => app.model.outputs.isRunning ?? false);
+
 /** Read indices that actually returned results, in a stable display order. */
 const availableIndices = computed<string[]>(() => {
   const r = reads.value;
@@ -116,7 +118,12 @@ const notices = computed<Notice[]>(() => {
 </script>
 
 <template>
-  <template v-if="reads">
+  <div v-if="isRunning" class="reads-loading">
+    <span class="reads-spinner" />
+    <span>Reading reads…</span>
+  </div>
+
+  <template v-else-if="reads">
     <div class="viewer-controls">
       <PlBtnGroup
         v-if="isPaired"
@@ -195,5 +202,26 @@ const notices = computed<Notice[]>(() => {
 .read-block {
   display: block;
   padding-bottom: 6px;
+}
+.reads-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 48px 0;
+  color: var(--txt-03, #6b7280);
+}
+.reads-spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--border-color-default, #d0d5dd);
+  border-top-color: var(--txt-01, #111827);
+  border-radius: 50%;
+  animation: reads-spin 0.8s linear infinite;
+}
+@keyframes reads-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 </style>

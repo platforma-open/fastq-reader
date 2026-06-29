@@ -217,6 +217,9 @@ export const platforma = BlockModelV3.create(dataModel)
     return readIndicesFromSpec(spec);
   })
 
+  // True while the extraction workflow is computing (Run pressed, not yet done).
+  .output("isRunning", (ctx): boolean => ctx.outputs?.getIsReadyOrError() === false)
+
   // Whether the dataset is FASTA (no per-base quality) — drives viewer presentation.
   .output("isFasta", (ctx): boolean | undefined => {
     if (!ctx.data.inputRef) return undefined;

@@ -3,7 +3,6 @@ import type { SelectionMode } from "@platforma-open/milaboratories.fastq-reader.
 import type { PlRef } from "@platforma-sdk/model";
 import type { ListOption } from "@platforma-sdk/ui-vue";
 import {
-  PlBtnGroup,
   PlCheckbox,
   PlDropdown,
   PlDropdownRef,
@@ -45,7 +44,7 @@ function onDatasetUpdate(ref: PlRef | undefined) {
 
   <PlDropdown v-model="app.model.data.sampleId" :options="sampleOptions" label="Sample" />
 
-  <PlBtnGroup v-model="app.model.data.selectionMode" :options="modeOptions" label="Selection" />
+  <PlDropdown v-model="app.model.data.selectionMode" :options="modeOptions" label="Selection" />
 
   <!-- Range -->
   <template v-if="app.model.data.selectionMode === 'range'">
