@@ -266,19 +266,29 @@ class ExtractReadsTest(unittest.TestCase):
         self.assertEqual(d["total"], 5)
         self.assertTrue(d["truncated"])
 
-    def test_long_read_truncated(self):
+    def test_long_read_emitted_in_full(self):
+        # Sequences are emitted untruncated so the UI can offer a faithful FASTQ
+        # download; display truncation happens UI-side.
         fq = self._p("t.fastq")
         write_fastq(fq, 3, seq_for=lambda i: "A" * 6000)
-        d = run(
-            fq,
-            {"format": "fastq", "mode": "range", "start": 1, "count": 1, "maxSeqLen": 100},
-            self._out(),
-        )
+        d = run(fq, {"format": "fastq", "mode": "range", "start": 1, "count": 1}, self._out())
         rec = d["reads"][0]
         self.assertEqual(rec["seqLen"], 6000)
-        self.assertEqual(len(rec["sequence"]), 100)
-        self.assertTrue(rec["seqTruncated"])
-        self.assertEqual(len(rec["quality"]), 100)
+        self.assertEqual(len(rec["sequence"]), 6000)
+        self.assertEqual(len(rec["quality"]), 6000)
+
+    def test_payload_cap_limits_reads(self):
+        # Many long reads are bounded by the payload cap, flagged via truncated.
+        fq = self._p("t.fastq")
+        write_fastq(fq, 500, seq_for=lambda i: "A" * 5000)
+        d = run(
+            fq,
+            {"format": "fastq", "mode": "range", "start": 1, "count": 500,
+             "maxPayloadBytes": 100000},
+            self._out(),
+        )
+        self.assertTrue(d["truncated"])
+        self.assertLess(d["total"], 500)
 
     # ---- empty / malformed ----
 

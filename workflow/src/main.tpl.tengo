@@ -45,7 +45,6 @@ wf.body(func(args) {
 		headers: args.readHeaders,
 		pattern: args.pattern,
 		maxReads: args.maxReads,
-		maxSeqLen: 2000,
 		scanCap: 2000000
 	}
 

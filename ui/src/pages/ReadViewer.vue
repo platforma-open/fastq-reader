@@ -1,24 +1,31 @@
 <script setup lang="ts">
 import type { ReadRecord, ReadsResult } from "@platforma-open/milaboratories.fastq-reader.model";
 import type { ListOption } from "@platforma-sdk/ui-vue";
-import { PlAlert, PlBtnGroup } from "@platforma-sdk/ui-vue";
+import { PlAlert, PlBtnGhost, PlBtnGroup, PlMaskIcon24 } from "@platforma-sdk/ui-vue";
 import { computed } from "vue";
 import { useApp } from "../app";
 
 const app = useApp();
 
 const READ_INDEX_ORDER = ["R1", "R2", "I1", "I2"];
+/** Max characters of a sequence/quality rendered per read (display only — the
+ *  full read is kept in memory for a faithful download). */
+const DISPLAY_LIMIT = 2000;
 
 const contentOptions: ListOption<"full" | "sequence">[] = [
   { label: "Full record", value: "full" },
   { label: "Sequence only", value: "sequence" },
 ];
+const pairedOptions: ListOption<"R1" | "R2" | "both">[] = [
+  { label: "R1", value: "R1" },
+  { label: "R2", value: "R2" },
+  { label: "Both", value: "both" },
+];
 
 const reads = computed<Record<string, ReadsResult> | undefined>(() => app.model.outputs.reads);
-
 const isRunning = computed(() => app.model.outputs.isRunning ?? false);
+const isFasta = computed(() => app.model.outputs.isFasta ?? false);
 
-/** Read indices that actually returned results, in a stable display order. */
 const availableIndices = computed<string[]>(() => {
   const r = reads.value;
   if (!r) return [];
@@ -33,13 +40,6 @@ const isPaired = computed(
   () => availableIndices.value.includes("R1") && availableIndices.value.includes("R2"),
 );
 
-const pairedOptions = computed<ListOption<"R1" | "R2" | "both">[]>(() => [
-  { label: "R1", value: "R1" },
-  { label: "R2", value: "R2" },
-  { label: "Both", value: "both" },
-]);
-
-/** Indices to actually render given the paired-view toggle. */
 const shownIndices = computed<string[]>(() => {
   const avail = availableIndices.value;
   if (!isPaired.value) return avail.slice(0, 1);
@@ -52,25 +52,23 @@ const maxRows = computed(() =>
   Math.max(0, ...shownIndices.value.map((ri) => reads.value?.[ri]?.reads.length ?? 0)),
 );
 
-// Derived from the dataset spec (not inferred from a read), so it's correct even
-// when the current selection returns zero reads.
-const isFasta = computed(() => app.model.outputs.isFasta ?? false);
-
-function recordLines(rec: ReadRecord | undefined): string[] {
-  if (!rec) return [];
-  const tail = rec.seqTruncated ? ` … (${rec.seqLen} bp)` : "";
+/** Lines for one read, with sequence/quality truncated for display only. */
+function recordLines(rec: ReadRecord | undefined): string {
+  if (!rec) return "";
+  const truncated = rec.seqLen > DISPLAY_LIMIT;
+  const seq = truncated ? rec.sequence.slice(0, DISPLAY_LIMIT) : rec.sequence;
+  const tail = truncated ? ` … (${rec.seqLen} bp)` : "";
   if (app.model.data.contentView === "sequence") {
-    return [rec.sequence + tail];
+    return seq + tail;
   }
   if (rec.quality === undefined) {
-    // fasta
-    return [`>${rec.header}`, rec.sequence + tail];
+    return `>${rec.header}\n${seq}${tail}`;
   }
-  return [`@${rec.header}`, rec.sequence + tail, "+", rec.quality + (rec.seqTruncated ? " …" : "")];
+  const qual = truncated ? rec.quality.slice(0, DISPLAY_LIMIT) + " …" : rec.quality;
+  return `@${rec.header}\n${seq}${tail}\n+\n${qual}`;
 }
 
 type Notice = { type: "info" | "warn"; text: string };
-
 const notices = computed<Notice[]>(() => {
   const out: Notice[] = [];
   const r = reads.value;
@@ -96,9 +94,6 @@ const notices = computed<Notice[]>(() => {
         text: `${ri}: headers not found: ${res.notFoundHeaders.join(", ")}.`,
       });
   }
-  // The two columns are aligned by row index. Pairs are true mates only when the
-  // same ordinals are read from each file — i.e. sequential range or read-numbers.
-  // Randomize, headers, and pattern match each mate independently, so warn.
   if (isPaired.value && app.model.data.pairedView === "both") {
     const mode = app.model.data.selectionMode;
     if (mode === "range" && app.model.data.randomize) {
@@ -115,6 +110,51 @@ const notices = computed<Notice[]>(() => {
   }
   return out;
 });
+
+// ---- download ----
+
+const sampleLabel = computed(() => {
+  const id = app.model.data.sampleId;
+  const opt = (app.model.outputs.sampleOptions ?? []).find((o) => o.value === id);
+  return opt?.label ?? id ?? "reads";
+});
+
+const canDownload = computed(() =>
+  shownIndices.value.some((ri) => (reads.value?.[ri]?.reads.length ?? 0) > 0),
+);
+
+function safeName(s: string): string {
+  return s.replace(/[^A-Za-z0-9._-]+/g, "_");
+}
+
+function recordToText(rec: ReadRecord, fasta: boolean): string {
+  if (fasta) return `>${rec.header}\n${rec.sequence}\n`;
+  return `@${rec.header}\n${rec.sequence}\n+\n${rec.quality ?? ""}\n`;
+}
+
+function downloadText(filename: string, text: string) {
+  const url = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// Builds FASTQ (or FASTA) from the full reads currently in view and downloads
+// one file per shown read index. Faithful — the tool emits untruncated reads.
+function onDownload() {
+  const fasta = isFasta.value;
+  const ext = fasta ? "fasta" : "fastq";
+  const base = safeName(sampleLabel.value);
+  const multi = shownIndices.value.length > 1;
+  for (const ri of shownIndices.value) {
+    const res = reads.value?.[ri];
+    if (!res || res.reads.length === 0) continue;
+    const body = res.reads.map((r) => recordToText(r, fasta)).join("");
+    downloadText(`${base}${multi ? `_${ri}` : ""}.${ext}`, body);
+  }
+}
 </script>
 
 <template>
@@ -132,31 +172,36 @@ const notices = computed<Notice[]>(() => {
         label="Reads"
       />
       <PlBtnGroup v-model="app.model.data.contentView" :options="contentOptions" label="View" />
+      <PlBtnGhost :disabled="!canDownload" @click="onDownload">
+        Download {{ isFasta ? "FASTA" : "FASTQ" }}
+        <template #append><PlMaskIcon24 name="download" /></template>
+      </PlBtnGhost>
     </div>
 
     <PlAlert v-for="(n, i) in notices" :key="i" :type="n.type === 'warn' ? 'warn' : 'info'">
       {{ n.text }}
     </PlAlert>
 
-    <!-- Single column -->
-    <div v-if="shownIndices.length === 1" class="reads-single">
-      <div class="col-header">{{ isFasta ? "Sequences" : shownIndices[0] }}</div>
-      <pre class="reads"><template
-        v-for="rec in reads[shownIndices[0]]?.reads ?? []"
-        :key="rec.number"
-      ><span class="read-block">{{ recordLines(rec).join("\n") }}</span>
-</template></pre>
+    <!-- Single column (single-end / fasta / R1-only / R2-only) -->
+    <div v-if="shownIndices.length === 1" class="reads-grid">
+      <div class="grid-head">
+        <div class="cell">{{ isFasta ? "Sequences" : shownIndices[0] }}</div>
+      </div>
+      <div v-for="rec in reads[shownIndices[0]]?.reads ?? []" :key="rec.number" class="grid-row">
+        <pre class="cell-pre">{{ recordLines(rec) }}</pre>
+      </div>
     </div>
 
-    <!-- Two columns side by side, row-aligned by read index -->
-    <div v-else class="reads-paired">
-      <div v-for="ri in shownIndices" :key="ri" class="reads-col">
-        <div class="col-header">{{ ri }}</div>
-        <pre class="reads"><template
-          v-for="row in maxRows"
-          :key="row"
-        ><span class="read-block">{{ recordLines(reads[ri]?.reads[row - 1]).join("\n") }}</span>
-</template></pre>
+    <!-- Paired: single scroll container, R1[i] and R2[i] on the same row so the
+         two columns scroll together and pairs stay aligned. -->
+    <div v-else class="reads-grid">
+      <div class="grid-head">
+        <div v-for="ri in shownIndices" :key="ri" class="cell">{{ ri }}</div>
+      </div>
+      <div v-for="row in maxRows" :key="row" class="grid-row">
+        <pre v-for="ri in shownIndices" :key="ri" class="cell-pre">{{
+          recordLines(reads[ri]?.reads[row - 1])
+        }}</pre>
       </div>
     </div>
   </template>
@@ -173,35 +218,42 @@ const notices = computed<Notice[]>(() => {
   flex-wrap: wrap;
   align-items: flex-end;
 }
-.reads-paired {
+.reads-grid {
+  max-height: 60vh;
+  overflow: auto;
+  border: 1px solid var(--border-color-default, #e0e0e0);
+  border-radius: 6px;
+}
+.grid-head {
   display: flex;
   gap: 16px;
-  align-items: flex-start;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-base, #fff);
+  border-bottom: 1px solid var(--border-color-default, #e0e0e0);
+  padding: 6px 8px;
 }
-.reads-col {
+.grid-row {
+  display: flex;
+  gap: 16px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border-color-div, #f0f0f0);
+}
+.cell {
   flex: 1 1 0;
   min-width: 0;
-}
-.col-header {
   font-weight: 600;
-  margin-bottom: 4px;
 }
-.reads {
+.cell-pre {
+  flex: 1 1 0;
+  min-width: 0;
+  margin: 0;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
   line-height: 1.4;
   white-space: pre;
   overflow-x: auto;
-  max-height: 60vh;
-  overflow-y: auto;
-  padding: 8px;
-  border: 1px solid var(--border-color-default, #e0e0e0);
-  border-radius: 6px;
-  margin: 0;
-}
-.read-block {
-  display: block;
-  padding-bottom: 6px;
 }
 .reads-loading {
   display: flex;

@@ -84,9 +84,12 @@ def records(path, fmt, gzipped):
 # ---------------------------------------------------------------------------
 
 class Emitter:
-    def __init__(self, max_reads, max_seq_len, max_payload_bytes):
+    # Emits FULL reads (no per-read sequence truncation) so the UI can both render
+    # and offer a faithful FASTQ/FASTA download. Display-side truncation of very
+    # long reads is handled in the UI. Volume is bounded by max_reads and
+    # max_payload_bytes (kept under the ~4 MB inline-JSON limit).
+    def __init__(self, max_reads, max_payload_bytes):
         self.max_reads = max_reads
-        self.max_seq_len = max_seq_len
         self.max_payload_bytes = max_payload_bytes
         self.reads = []
         self.payload = 0
@@ -99,15 +102,10 @@ class Emitter:
         if self.full():
             self.truncated = True
             return False
-        seq_len = len(seq)
-        seq_trunc = seq_len > self.max_seq_len
-        out_seq = seq[: self.max_seq_len]
-        rec = {"number": number, "header": header, "sequence": out_seq, "seqLen": seq_len}
-        if seq_trunc:
-            rec["seqTruncated"] = True
+        rec = {"number": number, "header": header, "sequence": seq, "seqLen": len(seq)}
         if qual is not None:
-            rec["quality"] = qual[: self.max_seq_len]
-        self.payload += len(out_seq) + (len(rec.get("quality", ""))) + len(header) + 32
+            rec["quality"] = qual
+        self.payload += len(seq) + len(qual or "") + len(header) + 32
         self.reads.append(rec)
         return True
 
@@ -310,8 +308,7 @@ def main():
 
     em = Emitter(
         max_reads=int(p.get("maxReads", 1000)),
-        max_seq_len=int(p.get("maxSeqLen", 2000)),
-        max_payload_bytes=int(p.get("maxPayloadBytes", 8_000_000)),
+        max_payload_bytes=int(p.get("maxPayloadBytes", 3_000_000)),
     )
 
     meta = {}

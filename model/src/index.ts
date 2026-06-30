@@ -76,7 +76,6 @@ export type ReadRecord = {
   header: string;
   sequence: string;
   seqLen: number;
-  seqTruncated?: boolean;
   quality?: string;
 };
 
