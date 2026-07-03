@@ -1,5 +1,10 @@
 import type { InferOutputsType, PlRef } from "@platforma-sdk/model";
-import { BlockModelV3, DataModelBuilder, isPColumnSpec } from "@platforma-sdk/model";
+import {
+  BlockModelV3,
+  DataModelBuilder,
+  isPColumnSpec,
+  parseResourceMap,
+} from "@platforma-sdk/model";
 
 export type SelectionMode = "range" | "numbers" | "headers" | "pattern";
 
@@ -225,6 +230,28 @@ export const platforma = BlockModelV3.create(dataModel)
     const spec = ctx.resultPool.getPColumnSpecByRef(ctx.data.inputRef);
     const ext = spec?.domain?.["pl7.app/fileExtension"];
     return ext !== undefined && FASTA_EXTENSIONS.has(ext);
+  })
+
+  // Remote handles for the selected sample's ORIGINAL files, read straight from
+  // the dataset column in the result pool (no extraction). Feeds the "download
+  // raw files" button, which streams the full files (potentially many GB) from
+  // the backend — not built client-side like the "download selected" button.
+  .output("rawFileExports", (ctx) => {
+    if (!ctx.data.inputRef || !ctx.data.sampleId) return undefined;
+    const spec = ctx.resultPool.getPColumnSpecByRef(ctx.data.inputRef);
+    const pcol = ctx.resultPool.getPColumnByRef(ctx.data.inputRef);
+    if (!spec || !pcol) return undefined;
+    const readIndexPos = spec.axesSpec.findIndex((a) => a.name === READ_INDEX_AXIS);
+    const ext = spec.domain?.["pl7.app/fileExtension"] ?? "fastq";
+    const labels = ctx.findLabels(spec.axesSpec[0]) ?? {};
+    const label = String(labels[ctx.data.sampleId] ?? ctx.data.sampleId);
+    const rm = parseResourceMap(pcol.data, (acc) => acc.getRemoteFileHandle(), false);
+    return rm.data
+      .filter((e) => e.value && String(e.key[0]) === ctx.data.sampleId)
+      .map((e) => {
+        const ri = readIndexPos >= 0 ? String(e.key[readIndexPos]) : "R1";
+        return { readIndex: ri, fileName: `${label}_${ri}.${ext}`, handle: e.value };
+      });
   })
 
   // Extracted reads, keyed by read index. Resolve only the indices the dataset

@@ -1,7 +1,14 @@
 <script setup lang="ts">
 import type { ReadRecord, ReadsResult } from "@platforma-open/milaboratories.fastq-reader.model";
-import type { ListOption } from "@platforma-sdk/ui-vue";
-import { PlAlert, PlBtnGhost, PlBtnGroup, PlMaskIcon24 } from "@platforma-sdk/ui-vue";
+import type { ImportFileHandle } from "@platforma-sdk/model";
+import type { FileExportEntry, ListOption } from "@platforma-sdk/ui-vue";
+import {
+  PlAlert,
+  PlBtnExportArchive,
+  PlBtnGhost,
+  PlBtnGroup,
+  PlMaskIcon24,
+} from "@platforma-sdk/ui-vue";
 import { computed } from "vue";
 import { useApp } from "../app";
 
@@ -141,6 +148,21 @@ function downloadText(filename: string, text: string) {
   URL.revokeObjectURL(url);
 }
 
+// Original, full-size files for the open sample — streamed from the backend by
+// PlBtnExportArchive (never built client-side; they can be many GB).
+const rawFileExports = computed<FileExportEntry[]>(() => {
+  const out: FileExportEntry[] = [];
+  for (const e of app.model.outputs.rawFileExports ?? []) {
+    if (!e.handle) continue; // narrows away the undefined handle
+    out.push({
+      importHandle: e.fileName as ImportFileHandle,
+      blobHandle: e.handle,
+      fileName: e.fileName,
+    });
+  }
+  return out;
+});
+
 // Builds FASTQ (or FASTA) from the full reads currently in view and downloads
 // one file per shown read index. Faithful — the tool emits untruncated reads.
 function onDownload() {
@@ -173,9 +195,16 @@ function onDownload() {
       />
       <PlBtnGroup v-model="app.model.data.contentView" :options="contentOptions" label="View" />
       <PlBtnGhost :disabled="!canDownload" @click="onDownload">
-        Download {{ isFasta ? "FASTA" : "FASTQ" }}
+        Download selected {{ isFasta ? "FASTA" : "FASTQ" }}
         <template #append><PlMaskIcon24 name="download" /></template>
       </PlBtnGhost>
+      <PlBtnExportArchive
+        :file-exports="rawFileExports"
+        :disabled="rawFileExports.length === 0"
+        suggested-file-name="raw-files"
+      >
+        Download raw files
+      </PlBtnExportArchive>
     </div>
 
     <PlAlert v-for="(n, i) in notices" :key="i" :type="n.type === 'warn' ? 'warn' : 'info'">
