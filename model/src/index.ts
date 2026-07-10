@@ -1,15 +1,13 @@
 import type { InferOutputsType, PlRef } from "@platforma-sdk/model";
-import {
-  BlockModelV3,
-  DataModelBuilder,
-  isPColumnSpec,
-  parseResourceMap,
-} from "@platforma-sdk/model";
+import { BlockModelV3, DataModelBuilder, isPColumnSpec } from "@platforma-sdk/model";
 
 export type SelectionMode = "range" | "numbers" | "headers" | "pattern";
 
 /** Hard cap on reads ever extracted/displayed, regardless of requested count. */
 const MAX_READS = 5000;
+
+/** Default number of reads scanned for search / gzip-random modes (see workflow). */
+const DEFAULT_SCAN_CAP = 2_000_000;
 
 const FASTQ_EXTENSIONS = new Set(["fastq", "fastq.gz", "fasta", "fasta.gz"]);
 const FASTA_EXTENSIONS = new Set(["fasta", "fasta.gz"]);
@@ -55,6 +53,8 @@ export type BlockData = {
   readNumbers: string;
   readHeaders: string;
   pattern: string;
+  // max reads scanned for search / gzip-random modes; ≥ file size ⇒ whole file
+  scanCap: number;
 
   // view-only state
   pairedView: "R1" | "R2" | "both";
@@ -74,6 +74,7 @@ export type BlockArgs = {
   readHeaders: string[];
   pattern: string;
   maxReads: number;
+  scanCap: number;
 };
 
 export type ReadRecord = {
@@ -91,7 +92,6 @@ export type ReadsResult = {
   approximate?: boolean;
   scannedToCap?: boolean;
   notFoundHeaders?: string[];
-  randomByOffset?: boolean;
 };
 
 export type SampleOption = { value: string; label: string };
@@ -125,6 +125,7 @@ const dataModel = new DataModelBuilder().from<BlockData>("v1").init(() => ({
   readNumbers: "",
   readHeaders: "",
   pattern: "",
+  scanCap: DEFAULT_SCAN_CAP,
   pairedView: "both",
   contentView: "full",
   settingsOpen: true,
@@ -169,7 +170,18 @@ export const platforma = BlockModelV3.create(dataModel)
       readHeaders: mode === "headers" ? headers : [],
       pattern: mode === "pattern" ? pattern : "",
       maxReads: maxReadsFor,
+      scanCap: clampInt(data.scanCap, 1, Number.MAX_SAFE_INTEGER, DEFAULT_SCAN_CAP),
     };
+  })
+
+  // Staging args for the raw-file download. Only the dataset + sample are needed;
+  // returning these (independent of the read-selection args) lets the pre-run
+  // expose the original files WITHOUT a main Run, and keeps it from re-running
+  // when only the read selection changes. Undefined until both are chosen → no
+  // staging yet.
+  .prerunArgs((data) => {
+    if (!data.inputRef || !data.sampleId) return undefined;
+    return { inputRef: data.inputRef, sampleId: data.sampleId };
   })
 
   // Dataset dropdown — same filter as fastqc, widened to fasta.
@@ -232,26 +244,29 @@ export const platforma = BlockModelV3.create(dataModel)
     return ext !== undefined && FASTA_EXTENSIONS.has(ext);
   })
 
-  // Remote handles for the selected sample's ORIGINAL files, read straight from
-  // the dataset column in the result pool (no extraction). Feeds the "download
-  // raw files" button, which streams the full files (potentially many GB) from
-  // the backend — not built client-side like the "download selected" button.
+  // Remote handles for the selected sample's ORIGINAL files. The dataset column's
+  // data is not reachable from the model (only its spec is), so the PRE-RUN wraps
+  // each original file as a downloadable `rawFile_<readIndex>` resource; we read
+  // the on-demand handles from `ctx.prerun`. Feeds the "Download raw files"
+  // button, which streams the full files (potentially many GB) from the backend.
+  // Available WITHOUT a main Run — the pre-run computes as soon as a dataset +
+  // sample are selected.
   .output("rawFileExports", (ctx) => {
-    if (!ctx.data.inputRef || !ctx.data.sampleId) return undefined;
+    const prerun = ctx.prerun;
+    if (!prerun || !ctx.data.inputRef || !ctx.data.sampleId) return undefined;
     const spec = ctx.resultPool.getPColumnSpecByRef(ctx.data.inputRef);
-    const pcol = ctx.resultPool.getPColumnByRef(ctx.data.inputRef);
-    if (!spec || !pcol) return undefined;
-    const readIndexPos = spec.axesSpec.findIndex((a) => a.name === READ_INDEX_AXIS);
-    const ext = spec.domain?.["pl7.app/fileExtension"] ?? "fastq";
-    const labels = ctx.findLabels(spec.axesSpec[0]) ?? {};
+    const indices = spec ? readIndicesFromSpec(spec) : ["R1"];
+    const ext = spec?.domain?.["pl7.app/fileExtension"] ?? "fastq";
+    const labels = spec ? (ctx.findLabels(spec.axesSpec[0]) ?? {}) : {};
     const label = String(labels[ctx.data.sampleId] ?? ctx.data.sampleId);
-    const rm = parseResourceMap(pcol.data, (acc) => acc.getRemoteFileHandle(), false);
-    return rm.data
-      .filter((e) => e.value && String(e.key[0]) === ctx.data.sampleId)
-      .map((e) => {
-        const ri = readIndexPos >= 0 ? String(e.key[readIndexPos]) : "R1";
-        return { readIndex: ri, fileName: `${label}_${ri}.${ext}`, handle: e.value };
-      });
+
+    const out = indices.flatMap((ri) => {
+      const handle = prerun
+        .resolve({ field: `rawFile_${ri}`, allowPermanentAbsence: true })
+        ?.getRemoteFileHandle();
+      return handle ? [{ readIndex: ri, fileName: `${label}_${ri}.${ext}`, handle }] : [];
+    });
+    return out.length > 0 ? out : undefined;
   })
 
   // Extracted reads, keyed by read index. Resolve only the indices the dataset
@@ -271,7 +286,17 @@ export const platforma = BlockModelV3.create(dataModel)
     return Object.keys(out).length > 0 ? out : undefined;
   })
 
-  .title((ctx) => (ctx.data.sampleId ? `FASTQ Reader — ${ctx.data.sampleId}` : "FASTQ Reader"))
+  // Show the sample's human-readable label (as picked in the dropdown), not its
+  // raw id. Falls back to the id if the label can't be resolved yet.
+  .title((ctx) => {
+    if (!ctx.data.sampleId) return "FASTQ Reader";
+    const spec = ctx.data.inputRef
+      ? ctx.resultPool.getPColumnSpecByRef(ctx.data.inputRef)
+      : undefined;
+    const labels = spec ? (ctx.findLabels(spec.axesSpec[0]) ?? {}) : {};
+    const label = String(labels[ctx.data.sampleId] ?? ctx.data.sampleId);
+    return `FASTQ Reader — ${label}`;
+  })
 
   .sections((_ctx) => [{ type: "link" as const, href: "/" as const, label: "Main" }])
 

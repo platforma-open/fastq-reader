@@ -30,18 +30,27 @@ const pairedOptions: ListOption<"R1" | "R2" | "both">[] = [
 ];
 
 const reads = computed<Record<string, ReadsResult> | undefined>(() => app.model.outputs.reads);
-const isRunning = computed(() => app.model.outputs.isRunning ?? false);
 const isFasta = computed(() => app.model.outputs.isFasta ?? false);
 
+// Column layout is driven by the dataset's DECLARED read indices (known up
+// front), not by which extractions have resolved so far. R1 and R2 are separate
+// runs and finish at different times; keying off resolved reads made the table
+// briefly show only R1 and then flip to two columns. Falls back to resolved
+// reads if the declared list isn't available yet.
+const expectedIndices = computed<string[]>(() => app.model.outputs.readIndices ?? []);
+
 const availableIndices = computed<string[]>(() => {
-  const r = reads.value;
-  if (!r) return [];
-  const known = READ_INDEX_ORDER.filter((ri) => r[ri] !== undefined);
-  const extra = Object.keys(r)
-    .filter((k) => !READ_INDEX_ORDER.includes(k))
-    .sort();
+  const src =
+    expectedIndices.value.length > 0 ? expectedIndices.value : Object.keys(reads.value ?? {});
+  const known = READ_INDEX_ORDER.filter((ri) => src.includes(ri));
+  const extra = src.filter((k) => !READ_INDEX_ORDER.includes(k)).sort();
   return [...known, ...extra];
 });
+
+/** A shown index whose extraction hasn't resolved yet (e.g. R2 still running). */
+function isIndexPending(ri: string): boolean {
+  return reads.value?.[ri] === undefined;
+}
 
 const isPaired = computed(
   () => availableIndices.value.includes("R1") && availableIndices.value.includes("R2"),
@@ -103,12 +112,9 @@ const notices = computed<Notice[]>(() => {
   }
   if (isPaired.value && app.model.data.pairedView === "both") {
     const mode = app.model.data.selectionMode;
-    if (mode === "range" && app.model.data.randomize) {
-      out.push({
-        type: "info",
-        text: "Under Randomize, R1 and R2 are independent random samples — not mates. Use sequential range or read numbers to see aligned pairs.",
-      });
-    } else if (mode === "headers" || mode === "pattern") {
+    // Range (sequential and randomized) and read-numbers keep R1/R2 aligned by
+    // ordinal. Only content-based selection can pick unrelated reads per side.
+    if (mode === "headers" || mode === "pattern") {
       out.push({
         type: "info",
         text: "In this mode R1 and R2 are matched independently, so reads shown side by side may not be mates. Use sequential range or read numbers for aligned pairs.",
@@ -180,12 +186,20 @@ function onDownload() {
 </script>
 
 <template>
-  <div v-if="isRunning" class="reads-loading">
-    <span class="reads-spinner" />
-    <span>Reading reads…</span>
+  <!-- Raw-file download comes from the pre-run, so it's available as soon as a
+       dataset + sample are selected — no Run needed. Kept separate from the
+       reads controls (which require a Run). -->
+  <div v-if="rawFileExports.length > 0" class="viewer-controls raw-bar">
+    <PlBtnExportArchive
+      :file-exports="rawFileExports"
+      :disabled="rawFileExports.length === 0"
+      suggested-file-name="raw-files"
+    >
+      Download raw files
+    </PlBtnExportArchive>
   </div>
 
-  <template v-else-if="reads">
+  <template v-if="reads">
     <div class="viewer-controls">
       <PlBtnGroup
         v-if="isPaired"
@@ -198,13 +212,6 @@ function onDownload() {
         Download selected {{ isFasta ? "FASTA" : "FASTQ" }}
         <template #append><PlMaskIcon24 name="download" /></template>
       </PlBtnGhost>
-      <PlBtnExportArchive
-        :file-exports="rawFileExports"
-        :disabled="rawFileExports.length === 0"
-        suggested-file-name="raw-files"
-      >
-        Download raw files
-      </PlBtnExportArchive>
     </div>
 
     <PlAlert v-for="(n, i) in notices" :key="i" :type="n.type === 'warn' ? 'warn' : 'info'">
@@ -214,7 +221,10 @@ function onDownload() {
     <!-- Single column (single-end / fasta / R1-only / R2-only) -->
     <div v-if="shownIndices.length === 1" class="reads-grid">
       <div class="grid-head">
-        <div class="cell">{{ isFasta ? "Sequences" : shownIndices[0] }}</div>
+        <div class="cell">
+          {{ isFasta ? "Sequences" : shownIndices[0] }}
+          <span v-if="isIndexPending(shownIndices[0])" class="pending-tag">· loading…</span>
+        </div>
       </div>
       <div v-for="rec in reads[shownIndices[0]]?.reads ?? []" :key="rec.number" class="grid-row">
         <pre class="cell-pre">{{ recordLines(rec) }}</pre>
@@ -225,7 +235,9 @@ function onDownload() {
          two columns scroll together and pairs stay aligned. -->
     <div v-else class="reads-grid">
       <div class="grid-head">
-        <div v-for="ri in shownIndices" :key="ri" class="cell">{{ ri }}</div>
+        <div v-for="ri in shownIndices" :key="ri" class="cell">
+          {{ ri }}<span v-if="isIndexPending(ri)" class="pending-tag">· loading…</span>
+        </div>
       </div>
       <div v-for="row in maxRows" :key="row" class="grid-row">
         <pre v-for="ri in shownIndices" :key="ri" class="cell-pre">{{
@@ -236,7 +248,8 @@ function onDownload() {
   </template>
 
   <PlAlert v-else type="info">
-    Pick a dataset and sample, choose reads, then press Run to view them.
+    Pick a dataset and sample, then press Run to view reads. Original files can be downloaded above
+    as soon as a sample is selected — no Run required.
   </PlAlert>
 </template>
 
@@ -246,6 +259,15 @@ function onDownload() {
   gap: 24px;
   flex-wrap: wrap;
   align-items: flex-end;
+}
+.pending-tag {
+  margin-left: 6px;
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--txt-03, #6b7280);
+}
+.raw-bar {
+  margin-bottom: 12px;
 }
 .reads-grid {
   max-height: 60vh;
@@ -283,26 +305,5 @@ function onDownload() {
   line-height: 1.4;
   white-space: pre;
   overflow-x: auto;
-}
-.reads-loading {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  padding: 48px 0;
-  color: var(--txt-03, #6b7280);
-}
-.reads-spinner {
-  width: 20px;
-  height: 20px;
-  border: 2px solid var(--border-color-default, #d0d5dd);
-  border-top-color: var(--txt-01, #111827);
-  border-radius: 50%;
-  animation: reads-spin 0.8s linear infinite;
-}
-@keyframes reads-spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 </style>

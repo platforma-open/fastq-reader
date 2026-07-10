@@ -11,6 +11,10 @@ json := import("json")
 
 extractSw := assets.importSoftware("@platforma-open/milaboratories.fastq-reader.software:extract-reads")
 
+// Raw-file download runs in the pre-run (see prerun.tpl.tengo) so it's available
+// without pressing Run — it only wraps existing blobs, no staging.
+wf.setPreRun(assets.importTemplate(":prerun"))
+
 // Resolve the dataset column (spec + resource map of File handles). Blob
 // contents are not read here — only handles — so this stays cheap on large data.
 wf.prepare(func(args) {
@@ -45,7 +49,7 @@ wf.body(func(args) {
 		headers: args.readHeaders,
 		pattern: args.pattern,
 		maxReads: args.maxReads,
-		scanCap: 2000000
+		scanCap: args.scanCap
 	}
 
 	// Locate the read-index axis by name — its position varies by dataset
