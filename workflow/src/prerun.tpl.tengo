@@ -1,0 +1,61 @@
+// Pre-run — exposes the selected sample's ORIGINAL files for download WITHOUT a
+// main Run. It only wraps already-imported blobs as downloadable resources
+// (file.exportFile); no extraction tool, no workdir staging, no blob copy. The
+// heavy read extraction stays in main.tpl.tengo (production body). This runs
+// automatically whenever the dataset/sample selection changes.
+
+wf := import("@platforma-sdk/workflow-tengo:workflow")
+file := import("@platforma-sdk/workflow-tengo:file")
+ll := import("@platforma-sdk/workflow-tengo:ll")
+maps := import("@platforma-sdk/workflow-tengo:maps")
+json := import("json")
+
+wf.prepare(func(args) {
+	return {
+		dataset: wf.resolve(args.inputRef, { errIfMissing: true })
+	}
+})
+
+wf.body(func(args) {
+	ll.assert(!is_undefined(args.inputRef), "input dataset is required")
+	ll.assert(!is_undefined(args.sampleId) && args.sampleId != "", "sample is required")
+
+	dataset := args.dataset
+	spec := dataset.spec
+
+	// Locate the read-index axis by name (position varies by dataset shape); fasta
+	// has none, so its single file is keyed "R1". Mirrors main.tpl.tengo.
+	readIndexPos := -1
+	for i, ax in spec.axesSpec {
+		if ax.name == "pl7.app/sequencing/readIndex" {
+			readIndexPos = i
+		}
+	}
+
+	// Collect this sample's files, one per read index (first by sorted key for
+	// multilane), matching the extraction's per-read-index selection.
+	inputsMap := dataset.data.inputs()
+	filesByReadIndex := {}
+	for sKey in maps.getKeys(inputsMap) {
+		key := json.decode(sKey)
+		if string(key[0]) != args.sampleId {
+			continue
+		}
+		readIndex := readIndexPos >= 0 ? string(key[readIndexPos]) : "R1"
+		if is_undefined(filesByReadIndex[readIndex]) {
+			filesByReadIndex[readIndex] = inputsMap[sKey]
+		}
+	}
+
+	// Wrap each original blob as a downloadable resource. This is what supplies
+	// getRemoteFileHandle in the model (raw blobs lack ctl/file/blobInfo).
+	outputs := {}
+	for readIndex in maps.getKeys(filesByReadIndex) {
+		outputs["rawFile_" + readIndex] = file.exportFile(filesByReadIndex[readIndex])
+	}
+
+	return {
+		outputs: outputs,
+		exports: {}
+	}
+})

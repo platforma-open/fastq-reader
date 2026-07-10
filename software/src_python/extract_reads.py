@@ -15,7 +15,6 @@ headers/patterns). Output is reads.json.
 import argparse
 import gzip
 import json
-import os
 import random
 import sys
 
@@ -188,8 +187,16 @@ def mode_pattern(path, fmt, gzipped, pattern, count, scan_cap, em):
     return {"scannedToCap": scanned_to_cap}
 
 
-def mode_range_random_gzip(path, fmt, gzipped, count, seed, scan_cap, em):
-    """gzip has no random access — single bounded reservoir-sampling pass."""
+def mode_range_random(path, fmt, gzipped, count, seed, scan_cap, em):
+    """Single bounded reservoir-sampling pass, used for BOTH gzipped and
+    uncompressed input.
+
+    Pairing guarantee: R1 and R2 are extracted by separate invocations, but with
+    the same seed and — for mates — the same read count and order. Reservoir
+    sampling is fully determined by (seed, number of records seen), so both sides
+    make identical selection decisions and pick the SAME read ordinals. Emitting
+    by ordinal therefore keeps R1[i]/R2[i] aligned as mates. (Byte-offset seeking
+    was faster on uncompressed input but could not preserve this alignment.)"""
     rng = random.Random(seed)
     reservoir = []  # (number, header, seq, qual)
     n_seen = 0
@@ -210,82 +217,6 @@ def mode_range_random_gzip(path, fmt, gzipped, count, seed, scan_cap, em):
         if not em.add(number, header, seq, qual):
             break
     return {"approximate": approximate}
-
-
-def _resync_fastq(fb):
-    """From the current position, find the next plausible FASTQ record.
-    Returns (header, seq, qual) or None. Disambiguates '@' quality chars by
-    requiring a '+' separator and len(seq)==len(qual)."""
-    fb.readline()  # drop partial line
-    for _ in range(2000):  # bounded resync window
-        line = fb.readline()
-        if not line:
-            return None
-        if line[:1] == b"@":
-            seq = fb.readline()
-            plus = fb.readline()
-            qual = fb.readline()
-            if not qual:
-                return None
-            if plus[:1] == b"+" and len(seq) == len(qual):
-                return (
-                    line[1:].rstrip(b"\n\r").decode("utf-8", "replace"),
-                    seq.rstrip(b"\n\r").decode("utf-8", "replace"),
-                    qual.rstrip(b"\n\r").decode("utf-8", "replace"),
-                )
-    return None
-
-
-def _resync_fasta(fb):
-    fb.readline()  # drop partial line
-    header = None
-    for _ in range(100000):
-        line = fb.readline()
-        if not line:
-            break
-        if line[:1] == b">":
-            header = line[1:].rstrip(b"\n\r").decode("utf-8", "replace")
-            break
-    if header is None:
-        return None
-    parts = []
-    for _ in range(100000):
-        pos = fb.tell()
-        line = fb.readline()
-        if not line or line[:1] == b">":
-            fb.seek(pos)
-            break
-        parts.append(line.rstrip(b"\n\r").decode("utf-8", "replace"))
-    return (header, "".join(parts), None)
-
-
-def mode_range_random_seek(path, fmt, count, seed, em):
-    """Uncompressed random access: seek to random byte offsets and read one
-    record near each. Reads ~count records regardless of file size."""
-    size = os.path.getsize(path)
-    rng = random.Random(seed)
-    seen_headers = set()
-    collected = []  # (offset-order, header, seq, qual) — we number by appearance
-    attempts = 0
-    max_attempts = count * 12 + 50
-    with open(path, "rb") as fb:
-        while len(collected) < count and attempts < max_attempts:
-            attempts += 1
-            off = rng.randint(0, max(0, size - 1))
-            fb.seek(off)
-            rec = _resync_fastq(fb) if fmt == "fastq" else _resync_fasta(fb)
-            if rec is None:
-                continue
-            if rec[0] in seen_headers:
-                continue
-            seen_headers.add(rec[0])
-            collected.append((off, rec))
-    collected.sort(key=lambda x: x[0])
-    # number is unknown (we didn't count); use sequential display index
-    for i, (_, (header, seq, qual)) in enumerate(collected, 1):
-        if not em.add(i, header, seq, qual):
-            break
-    return {"randomByOffset": True, "numbersAreOrdinal": False}
 
 
 # ---------------------------------------------------------------------------
@@ -315,10 +246,9 @@ def main():
     if mode == "range":
         count = int(p.get("count", 100))
         if p.get("randomize"):
-            if gzipped:
-                meta = mode_range_random_gzip(a.input, fmt, gzipped, count, seed, scan_cap, em)
-            else:
-                meta = mode_range_random_seek(a.input, fmt, count, seed, em)
+            # Reservoir sampling for both gzip and uncompressed — keeps paired
+            # R1/R2 aligned (same seed + equal read counts ⇒ same ordinals).
+            meta = mode_range_random(a.input, fmt, gzipped, count, seed, scan_cap, em)
         else:
             start = max(1, int(p.get("start", 1)))
             mode_range_sequential(a.input, fmt, gzipped, start, count, em)

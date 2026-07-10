@@ -85,7 +85,8 @@ function onDatasetUpdate(ref: PlRef | undefined) {
     :rows="4"
   >
     <template #tooltip>
-      One header per line (or comma-separated). Matches the read id exactly or as a prefix.
+      One header per line (or comma-separated). Matches the full header or the read id (first token)
+      exactly.
     </template>
   </PlTextArea>
 
@@ -98,4 +99,19 @@ function onDatasetUpdate(ref: PlRef | undefined) {
   >
     <template #tooltip>Reads whose sequence contains this subsequence (case-insensitive).</template>
   </PlTextField>
+
+  <!-- Scan limit — only applies to modes that scan into the file: read numbers,
+       headers, pattern, and randomized range (gzip has no random access). -->
+  <PlNumberField
+    v-if="app.model.data.selectionMode !== 'range' || app.model.data.randomize"
+    v-model="app.model.data.scanCap"
+    label="Scan limit (reads)"
+    :minValue="1"
+  >
+    <template #tooltip>
+      Maximum number of reads scanned when searching or random-sampling. Higher is more thorough but
+      slower on large files. If it exceeds the file's read count, the whole file is scanned. Does
+      not affect sequential range.
+    </template>
+  </PlNumberField>
 </template>

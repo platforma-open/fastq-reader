@@ -177,7 +177,7 @@ class ExtractReadsTest(unittest.TestCase):
 
     # ---- randomize ----
 
-    def test_randomize_plain_seek(self):
+    def test_randomize_plain_reservoir(self):
         fq = self._p("t.fastq")
         write_fastq(fq, 200)
         d = run(
@@ -188,6 +188,29 @@ class ExtractReadsTest(unittest.TestCase):
         self.assertEqual(d["total"], 10)
         # distinct reads
         self.assertEqual(len({r["header"] for r in d["reads"]}), 10)
+        # numbers are TRUE ordinals (reservoir), sorted and within the file
+        nums = [r["number"] for r in d["reads"]]
+        self.assertEqual(nums, sorted(nums))
+        self.assertTrue(all(1 <= n <= 200 for n in nums))
+
+    def test_randomize_pairs_aligned(self):
+        # R1 and R2 mates: identical read count + order + headers, but different
+        # sequences. Randomize with the same seed must pick the SAME ordinals on
+        # both sides so reads stay mate-aligned (the whole point of using seeded
+        # reservoir sampling for every input, gzipped or not).
+        r1 = self._p("r1.fastq")
+        r2 = self._p("r2.fastq")
+        write_fastq(r1, 300, seq_for=lambda i: "ACGT" * (5 + i % 3))
+        write_fastq(r2, 300, seq_for=lambda i: "TTGCA" * (4 + i % 5))
+        params = {"format": "fastq", "mode": "range", "randomize": True, "count": 12, "seed": 42}
+        a = run(r1, params, self._p("a.json"))
+        b = run(r2, params, self._p("b.json"))
+        self.assertEqual([x["number"] for x in a["reads"]], [x["number"] for x in b["reads"]])
+        self.assertEqual([x["header"] for x in a["reads"]], [x["header"] for x in b["reads"]])
+        # sanity: they really are different files
+        self.assertNotEqual(
+            [x["sequence"] for x in a["reads"]], [x["sequence"] for x in b["reads"]]
+        )
 
     def test_randomize_deterministic(self):
         fq = self._p("t.fastq")
@@ -243,7 +266,7 @@ class ExtractReadsTest(unittest.TestCase):
         self.assertNotIn("quality", d["reads"][0])
         self.assertEqual(d["reads"][0]["seqLen"], 100)
 
-    def test_fasta_randomize_seek(self):
+    def test_fasta_randomize_reservoir(self):
         fa = self._p("t.fasta")
         write_fasta(fa, 50)
         d = run(

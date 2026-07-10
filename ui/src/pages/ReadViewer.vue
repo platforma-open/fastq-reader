@@ -103,12 +103,9 @@ const notices = computed<Notice[]>(() => {
   }
   if (isPaired.value && app.model.data.pairedView === "both") {
     const mode = app.model.data.selectionMode;
-    if (mode === "range" && app.model.data.randomize) {
-      out.push({
-        type: "info",
-        text: "Under Randomize, R1 and R2 are independent random samples — not mates. Use sequential range or read numbers to see aligned pairs.",
-      });
-    } else if (mode === "headers" || mode === "pattern") {
+    // Range (sequential and randomized) and read-numbers keep R1/R2 aligned by
+    // ordinal. Only content-based selection can pick unrelated reads per side.
+    if (mode === "headers" || mode === "pattern") {
       out.push({
         type: "info",
         text: "In this mode R1 and R2 are matched independently, so reads shown side by side may not be mates. Use sequential range or read numbers for aligned pairs.",
@@ -180,6 +177,19 @@ function onDownload() {
 </script>
 
 <template>
+  <!-- Raw-file download comes from the pre-run, so it's available as soon as a
+       dataset + sample are selected — no Run needed. Kept separate from the
+       reads controls (which require a Run). -->
+  <div v-if="rawFileExports.length > 0" class="viewer-controls raw-bar">
+    <PlBtnExportArchive
+      :file-exports="rawFileExports"
+      :disabled="rawFileExports.length === 0"
+      suggested-file-name="raw-files"
+    >
+      Download raw files
+    </PlBtnExportArchive>
+  </div>
+
   <div v-if="isRunning" class="reads-loading">
     <span class="reads-spinner" />
     <span>Reading reads…</span>
@@ -198,13 +208,6 @@ function onDownload() {
         Download selected {{ isFasta ? "FASTA" : "FASTQ" }}
         <template #append><PlMaskIcon24 name="download" /></template>
       </PlBtnGhost>
-      <PlBtnExportArchive
-        :file-exports="rawFileExports"
-        :disabled="rawFileExports.length === 0"
-        suggested-file-name="raw-files"
-      >
-        Download raw files
-      </PlBtnExportArchive>
     </div>
 
     <PlAlert v-for="(n, i) in notices" :key="i" :type="n.type === 'warn' ? 'warn' : 'info'">
@@ -236,7 +239,8 @@ function onDownload() {
   </template>
 
   <PlAlert v-else type="info">
-    Pick a dataset and sample, choose reads, then press Run to view them.
+    Pick a dataset and sample, then press Run to view reads. Original files can be downloaded above
+    as soon as a sample is selected — no Run required.
   </PlAlert>
 </template>
 
@@ -246,6 +250,9 @@ function onDownload() {
   gap: 24px;
   flex-wrap: wrap;
   align-items: flex-end;
+}
+.raw-bar {
+  margin-bottom: 12px;
 }
 .reads-grid {
   max-height: 60vh;
