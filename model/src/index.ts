@@ -286,7 +286,17 @@ export const platforma = BlockModelV3.create(dataModel)
     return Object.keys(out).length > 0 ? out : undefined;
   })
 
-  .title((ctx) => (ctx.data.sampleId ? `FASTQ Reader — ${ctx.data.sampleId}` : "FASTQ Reader"))
+  // Show the sample's human-readable label (as picked in the dropdown), not its
+  // raw id. Falls back to the id if the label can't be resolved yet.
+  .title((ctx) => {
+    if (!ctx.data.sampleId) return "FASTQ Reader";
+    const spec = ctx.data.inputRef
+      ? ctx.resultPool.getPColumnSpecByRef(ctx.data.inputRef)
+      : undefined;
+    const labels = spec ? (ctx.findLabels(spec.axesSpec[0]) ?? {}) : {};
+    const label = String(labels[ctx.data.sampleId] ?? ctx.data.sampleId);
+    return `FASTQ Reader — ${label}`;
+  })
 
   .sections((_ctx) => [{ type: "link" as const, href: "/" as const, label: "Main" }])
 

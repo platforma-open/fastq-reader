@@ -30,7 +30,6 @@ const pairedOptions: ListOption<"R1" | "R2" | "both">[] = [
 ];
 
 const reads = computed<Record<string, ReadsResult> | undefined>(() => app.model.outputs.reads);
-const isRunning = computed(() => app.model.outputs.isRunning ?? false);
 const isFasta = computed(() => app.model.outputs.isFasta ?? false);
 
 const availableIndices = computed<string[]>(() => {
@@ -190,12 +189,7 @@ function onDownload() {
     </PlBtnExportArchive>
   </div>
 
-  <div v-if="isRunning" class="reads-loading">
-    <span class="reads-spinner" />
-    <span>Reading reads…</span>
-  </div>
-
-  <template v-else-if="reads">
+  <template v-if="reads">
     <div class="viewer-controls">
       <PlBtnGroup
         v-if="isPaired"
@@ -290,26 +284,5 @@ function onDownload() {
   line-height: 1.4;
   white-space: pre;
   overflow-x: auto;
-}
-.reads-loading {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  padding: 48px 0;
-  color: var(--txt-03, #6b7280);
-}
-.reads-spinner {
-  width: 20px;
-  height: 20px;
-  border: 2px solid var(--border-color-default, #d0d5dd);
-  border-top-color: var(--txt-01, #111827);
-  border-radius: 50%;
-  animation: reads-spin 0.8s linear infinite;
-}
-@keyframes reads-spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 </style>
