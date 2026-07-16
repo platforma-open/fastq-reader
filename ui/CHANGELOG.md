@@ -1,5 +1,13 @@
 # @platforma-open/milaboratories.fastq-reader.ui
 
+## 1.1.1
+
+### Patch Changes
+
+- 0ef6cde: SDK Update
+- Updated dependencies [0ef6cde]
+  - @platforma-open/milaboratories.fastq-reader.model@1.1.1
+
 ## 1.1.0
 
 ### Minor Changes
