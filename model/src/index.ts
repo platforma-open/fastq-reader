@@ -206,7 +206,7 @@ export const platforma = BlockModelV3.create(dataModel)
     if (!ctx.data.inputRef) return undefined;
     const spec = ctx.resultPool.getPColumnSpecByRef(ctx.data.inputRef);
     if (!spec) return undefined;
-    const labels = ctx.findLabels(spec.axesSpec[0]) ?? {};
+    const labels = ctx.resultPool.findLabels(spec.axesSpec[0]) ?? {};
 
     let ids: string[] | undefined;
     const raw = spec.annotations?.["pl7.app/axisKeys/0"];
@@ -257,7 +257,7 @@ export const platforma = BlockModelV3.create(dataModel)
     const spec = ctx.resultPool.getPColumnSpecByRef(ctx.data.inputRef);
     const indices = spec ? readIndicesFromSpec(spec) : ["R1"];
     const ext = spec?.domain?.["pl7.app/fileExtension"] ?? "fastq";
-    const labels = spec ? (ctx.findLabels(spec.axesSpec[0]) ?? {}) : {};
+    const labels = spec ? (ctx.resultPool.findLabels(spec.axesSpec[0]) ?? {}) : {};
     const label = String(labels[ctx.data.sampleId] ?? ctx.data.sampleId);
 
     const out = indices.flatMap((ri) => {
@@ -293,7 +293,7 @@ export const platforma = BlockModelV3.create(dataModel)
     const spec = ctx.data.inputRef
       ? ctx.resultPool.getPColumnSpecByRef(ctx.data.inputRef)
       : undefined;
-    const labels = spec ? (ctx.findLabels(spec.axesSpec[0]) ?? {}) : {};
+    const labels = spec ? (ctx.resultPool.findLabels(spec.axesSpec[0]) ?? {}) : {};
     const label = String(labels[ctx.data.sampleId] ?? ctx.data.sampleId);
     return `FASTQ Reader — ${label}`;
   })
