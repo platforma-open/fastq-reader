@@ -1,5 +1,11 @@
 # @platforma-open/milaboratories.fastq-reader.software
 
+## 1.1.1
+
+### Patch Changes
+
+- 48eb82d: Release software
+
 ## 1.1.0
 
 ### Minor Changes

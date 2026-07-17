@@ -1,5 +1,13 @@
 # @platforma-open/milaboratories.fastq-reader.workflow
 
+## 1.1.2
+
+### Patch Changes
+
+- 48eb82d: Release software
+- Updated dependencies [48eb82d]
+  - @platforma-open/milaboratories.fastq-reader.software@1.1.1
+
 ## 1.1.1
 
 ### Patch Changes
