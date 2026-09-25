@@ -1,8 +1,13 @@
-// Pre-run — exposes the selected sample's ORIGINAL files for download WITHOUT a
-// main Run. It only wraps already-imported blobs as downloadable resources
+// Pre-run — exposes the dataset's ORIGINAL files for download WITHOUT a main
+// Run. It only wraps already-imported blobs as downloadable resources
 // (file.exportFile); no extraction tool, no workdir staging, no blob copy. The
 // heavy read extraction stays in main.tpl.tengo (production body). This runs
-// automatically whenever the dataset/sample selection changes.
+// automatically whenever the dataset selection changes.
+//
+// EVERY file of the dataset is wrapped, not just the selected sample's: the
+// "Download whole dataset" button needs all of them, and the model picks the
+// selected sample's subset from the same set. Nothing is transferred until the
+// user starts a download.
 
 wf := import("@platforma-sdk/workflow-tengo:workflow")
 file := import("@platforma-sdk/workflow-tengo:file")
@@ -18,7 +23,6 @@ wf.prepare(func(args) {
 
 wf.body(func(args) {
 	ll.assert(!is_undefined(args.inputRef), "input dataset is required")
-	ll.assert(!is_undefined(args.sampleId) && args.sampleId != "", "sample is required")
 
 	dataset := args.dataset
 	spec := dataset.spec
@@ -32,27 +36,42 @@ wf.body(func(args) {
 		}
 	}
 
-	// Collect this sample's files, one per read index (first by sorted key for
-	// multilane), matching the extraction's per-read-index selection.
+	// Wrap every original blob as a downloadable resource. This is what supplies
+	// getRemoteFileHandle in the model (raw blobs lack ctl/file/blobInfo).
+	//
+	// Fields are numbered rather than named after sample ids — ids are arbitrary
+	// strings — and the `fileIndex` output tells the model what each field holds.
+	// Keys are iterated in sorted order so both the numbering and the resulting
+	// resource structure are canonical.
 	inputsMap := dataset.data.inputs()
-	filesByReadIndex := {}
-	for sKey in maps.getKeys(inputsMap) {
+	outputs := {}
+	fileIndex := []
+	for i, sKey in maps.getKeys(inputsMap) {
 		key := json.decode(sKey)
-		if string(key[0]) != args.sampleId {
-			continue
-		}
 		readIndex := readIndexPos >= 0 ? string(key[readIndexPos]) : "R1"
-		if is_undefined(filesByReadIndex[readIndex]) {
-			filesByReadIndex[readIndex] = inputsMap[sKey]
+
+		// Key parts other than sample id and read index (e.g. lane) keep multilane
+		// files distinguishable in a download.
+		extra := []
+		for p, part in key {
+			if p != 0 && p != readIndexPos {
+				extra = append(extra, string(part))
+			}
 		}
+
+		field := "rawFile_" + string(i)
+		outputs[field] = file.exportFile(inputsMap[sKey])
+		fileIndex = append(fileIndex, {
+			field: field,
+			sampleId: string(key[0]),
+			readIndex: readIndex,
+			extra: extra
+		})
 	}
 
-	// Wrap each original blob as a downloadable resource. This is what supplies
-	// getRemoteFileHandle in the model (raw blobs lack ctl/file/blobInfo).
-	outputs := {}
-	for readIndex in maps.getKeys(filesByReadIndex) {
-		outputs["rawFile_" + readIndex] = file.exportFile(filesByReadIndex[readIndex])
-	}
+	// Plain value — the workflow's result builder converts it to a JSON resource,
+	// which the model reads with getDataAsJson.
+	outputs["fileIndex"] = fileIndex
 
 	return {
 		outputs: outputs,

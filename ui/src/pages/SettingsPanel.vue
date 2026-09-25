@@ -29,6 +29,14 @@ function onDatasetUpdate(ref: PlRef | undefined) {
   app.model.data.inputRef = ref;
   // Sample ids are dataset-scoped — the previous pick is meaningless for a new dataset.
   app.model.data.sampleId = undefined;
+  app.model.data.sampleLabel = undefined;
+}
+
+// Store the sample's label alongside its id so the sidebar subtitle can show a
+// human-readable name (the sidebar render context can't resolve labels itself).
+function onSampleUpdate(id: string | undefined) {
+  app.model.data.sampleId = id;
+  app.model.data.sampleLabel = sampleOptions.value.find((o) => o.value === id)?.label;
 }
 </script>
 
@@ -42,7 +50,12 @@ function onDatasetUpdate(ref: PlRef | undefined) {
     <template #tooltip>Pick a sequencing dataset imported with the Samples & Data block.</template>
   </PlDropdownRef>
 
-  <PlDropdown v-model="app.model.data.sampleId" :options="sampleOptions" label="Sample" />
+  <PlDropdown
+    :model-value="app.model.data.sampleId"
+    :options="sampleOptions"
+    label="Sample"
+    @update:model-value="onSampleUpdate"
+  />
 
   <PlDropdown v-model="app.model.data.selectionMode" :options="modeOptions" label="Selection" />
 
