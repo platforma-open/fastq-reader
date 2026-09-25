@@ -1,4 +1,4 @@
-import type { InferOutputsType, PlRef } from "@platforma-sdk/model";
+import type { BlockRenderCtx, InferOutputsType, PlRef } from "@platforma-sdk/model";
 import { BlockModelV3, DataModelBuilder, isPColumnSpec } from "@platforma-sdk/model";
 
 export type SelectionMode = "range" | "numbers" | "headers" | "pattern";
@@ -43,6 +43,9 @@ function clampInt(value: number, min: number, max: number, fallback: number): nu
 export type BlockData = {
   inputRef?: PlRef;
   sampleId?: string;
+  // Human-readable label of the selected sample, stored by the UI on selection.
+  // The subtitle reads this (the sidebar render ctx can't resolve labels itself).
+  sampleLabel?: string;
 
   selectionMode: SelectionMode;
   // range mode
@@ -96,6 +99,77 @@ export type ReadsResult = {
 
 export type SampleOption = { value: string; label: string };
 
+/**
+ * One wrapped original file, as published by the pre-run's `fileIndex`. `extra`
+ * holds the key parts that are neither the sample id nor the read index (e.g.
+ * lane), so multilane files stay distinguishable in a download.
+ */
+type RawFileIndexEntry = {
+  field: string;
+  sampleId: string;
+  readIndex: string;
+  extra?: string[];
+};
+
+/** Filesystem-safe fragment of a download file name. */
+const safeNamePart = (s: string): string =>
+  s.replace(/[^A-Za-z0-9.-]+/g, "_").replace(/^_+|_+$/g, "");
+
+/**
+ * Turns the pre-run's `fileIndex` into download entries, keeping the files the
+ * caller asks for. Resolves each wrapped blob to an on-demand remote handle —
+ * nothing is transferred here; the download starts when the user clicks.
+ */
+function collectRawExports(
+  ctx: BlockRenderCtx<BlockArgs, BlockData>,
+  keep: (entry: RawFileIndexEntry) => boolean,
+) {
+  const prerun = ctx.prerun;
+  if (!prerun || !ctx.data.inputRef) return [];
+
+  const index = prerun
+    .resolve({ field: "fileIndex", allowPermanentAbsence: true })
+    ?.getDataAsJson<RawFileIndexEntry[]>();
+  if (!index) return [];
+
+  const spec = ctx.resultPool.getPColumnSpecByRef(ctx.data.inputRef);
+  const ext = spec?.domain?.["pl7.app/fileExtension"] ?? "fastq";
+  const labels = spec ? (ctx.resultPool.findLabels(spec.axesSpec[0]) ?? {}) : {};
+
+  // All or nothing: handles may be absent while the pre-run is still computing,
+  // and publishing only the ready ones would let the user save an archive that
+  // silently lacks files.
+  const wanted = index.filter(keep);
+  const resolved = wanted.flatMap((entry) => {
+    const handle = prerun
+      .resolve({ field: entry.field, allowPermanentAbsence: true })
+      ?.getRemoteFileHandle();
+    return handle ? [{ entry, handle }] : [];
+  });
+  if (resolved.length !== wanted.length) return [];
+
+  const used = new Set<string>();
+  return resolved.map(({ entry, handle }) => {
+    const base = [String(labels[entry.sampleId] ?? entry.sampleId), ...(entry.extra ?? [])]
+      .concat(entry.readIndex)
+      .map(safeNamePart)
+      .filter((part) => part !== "")
+      .join("_");
+
+    // Sample labels are user-editable and need not be unique, but zip entry
+    // names must be — fall back to the sample id, then to a counter.
+    let fileName = `${base}.${ext}`;
+    if (used.has(fileName)) {
+      const withId = `${base}_${safeNamePart(entry.sampleId)}`;
+      fileName = `${withId}.${ext}`;
+      for (let n = 2; used.has(fileName); n++) fileName = `${withId}_${n}.${ext}`;
+    }
+    used.add(fileName);
+
+    return { sampleId: entry.sampleId, readIndex: entry.readIndex, fileName, handle };
+  });
+}
+
 const parseNumbers = (text: string): number[] => {
   const out = new Set<number>();
   for (const tok of text.split(/[\s,]+/)) {
@@ -118,6 +192,7 @@ const parseHeaders = (text: string): string[] => {
 const dataModel = new DataModelBuilder().from<BlockData>("v1").init(() => ({
   inputRef: undefined,
   sampleId: undefined,
+  sampleLabel: undefined,
   selectionMode: "range",
   count: 10,
   startFrom: 1,
@@ -174,14 +249,15 @@ export const platforma = BlockModelV3.create(dataModel)
     };
   })
 
-  // Staging args for the raw-file download. Only the dataset + sample are needed;
-  // returning these (independent of the read-selection args) lets the pre-run
-  // expose the original files WITHOUT a main Run, and keeps it from re-running
-  // when only the read selection changes. Undefined until both are chosen → no
-  // staging yet.
+  // Staging args for the raw-file download. Only the dataset is needed — the
+  // pre-run wraps every file of it, and the model picks out the selected sample.
+  // Being independent of both the read selection AND the sample choice, this
+  // exposes the original files WITHOUT a main Run and keeps the pre-run from
+  // re-running when the user switches sample. Undefined until a dataset is
+  // chosen → no staging yet.
   .prerunArgs((data) => {
-    if (!data.inputRef || !data.sampleId) return undefined;
-    return { inputRef: data.inputRef, sampleId: data.sampleId };
+    if (!data.inputRef) return undefined;
+    return { inputRef: data.inputRef };
   })
 
   // Dataset dropdown — same filter as fastqc, widened to fasta.
@@ -244,28 +320,24 @@ export const platforma = BlockModelV3.create(dataModel)
     return ext !== undefined && FASTA_EXTENSIONS.has(ext);
   })
 
-  // Remote handles for the selected sample's ORIGINAL files. The dataset column's
-  // data is not reachable from the model (only its spec is), so the PRE-RUN wraps
-  // each original file as a downloadable `rawFile_<readIndex>` resource; we read
-  // the on-demand handles from `ctx.prerun`. Feeds the "Download raw files"
-  // button, which streams the full files (potentially many GB) from the backend.
-  // Available WITHOUT a main Run — the pre-run computes as soon as a dataset +
-  // sample are selected.
+  // Remote handles for the ORIGINAL files of the selected sample. The dataset
+  // column's data is not reachable from the model (only its spec is), so the
+  // PRE-RUN wraps every file in the dataset as a downloadable `rawFile_<n>`
+  // resource and publishes a `fileIndex` describing them; we read the on-demand
+  // handles from `ctx.prerun`. Feeds the "Download raw files" button, which
+  // streams the full files (potentially many GB) from the backend. Available
+  // WITHOUT a main Run — the pre-run computes as soon as a dataset is selected.
   .output("rawFileExports", (ctx) => {
-    const prerun = ctx.prerun;
-    if (!prerun || !ctx.data.inputRef || !ctx.data.sampleId) return undefined;
-    const spec = ctx.resultPool.getPColumnSpecByRef(ctx.data.inputRef);
-    const indices = spec ? readIndicesFromSpec(spec) : ["R1"];
-    const ext = spec?.domain?.["pl7.app/fileExtension"] ?? "fastq";
-    const labels = spec ? (ctx.resultPool.findLabels(spec.axesSpec[0]) ?? {}) : {};
-    const label = String(labels[ctx.data.sampleId] ?? ctx.data.sampleId);
+    if (!ctx.data.sampleId) return undefined;
+    const out = collectRawExports(ctx, (e) => e.sampleId === ctx.data.sampleId);
+    return out.length > 0 ? out : undefined;
+  })
 
-    const out = indices.flatMap((ri) => {
-      const handle = prerun
-        .resolve({ field: `rawFile_${ri}`, allowPermanentAbsence: true })
-        ?.getRemoteFileHandle();
-      return handle ? [{ readIndex: ri, fileName: `${label}_${ri}.${ext}`, handle }] : [];
-    });
+  // Same, for EVERY sample of the selected dataset — feeds the "Download whole
+  // dataset" button. One entry per original file; nothing is transferred until
+  // the user starts the download.
+  .output("datasetFileExports", (ctx) => {
+    const out = collectRawExports(ctx, () => true);
     return out.length > 0 ? out : undefined;
   })
 
@@ -286,17 +358,17 @@ export const platforma = BlockModelV3.create(dataModel)
     return Object.keys(out).length > 0 ? out : undefined;
   })
 
-  // Show the sample's human-readable label (as picked in the dropdown), not its
-  // raw id. Falls back to the id if the label can't be resolved yet.
-  .title((ctx) => {
-    if (!ctx.data.sampleId) return "FASTQ Reader";
-    const spec = ctx.data.inputRef
-      ? ctx.resultPool.getPColumnSpecByRef(ctx.data.inputRef)
-      : undefined;
-    const labels = spec ? (ctx.resultPool.findLabels(spec.axesSpec[0]) ?? {}) : {};
-    const label = String(labels[ctx.data.sampleId] ?? ctx.data.sampleId);
-    return `FASTQ Reader — ${label}`;
-  })
+  // The sidebar renders title/subtitle in an ARGS-ONLY context: no result pool,
+  // no workflow accessors, and `data` itself may not be parsed yet. Touching
+  // `ctx.resultPool` (or dereferencing `ctx.data` unguarded) throws there, and
+  // the platform substitutes the literal string "Invalid title" — which is what
+  // this block used to show. Keep the title constant and put the per-instance
+  // detail in the subtitle, read defensively from `data` only.
+  .title(() => "FASTQ Reader")
+
+  // Sample's human-readable label, stored by the UI on selection (the sidebar
+  // context can't resolve axis labels itself).
+  .subtitle((ctx) => String(ctx.data?.sampleLabel ?? ctx.data?.sampleId ?? ""))
 
   .sections((_ctx) => [{ type: "link" as const, href: "/" as const, label: "Main" }])
 
