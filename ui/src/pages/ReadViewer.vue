@@ -402,6 +402,11 @@ function onDownload() {
       </div>
     </div>
   </template>
+
+  <PlAlert v-else type="info">
+    Pick a dataset and sample, then press Run to view reads. The original files, for one sample or
+    the whole dataset, can be downloaded as soon as a dataset is selected — no Run required.
+  </PlAlert>
 </template>
 
 <style scoped>

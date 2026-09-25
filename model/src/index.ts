@@ -136,14 +136,17 @@ function collectRawExports(
   const ext = spec?.domain?.["pl7.app/fileExtension"] ?? "fastq";
   const labels = spec ? (ctx.resultPool.findLabels(spec.axesSpec[0]) ?? {}) : {};
 
-  // Resolve first (handles may be absent while the pre-run is still computing),
-  // then name — so the de-duplication below only sees files we can download.
-  const resolved = index.filter(keep).flatMap((entry) => {
+  // All or nothing: handles may be absent while the pre-run is still computing,
+  // and publishing only the ready ones would let the user save an archive that
+  // silently lacks files.
+  const wanted = index.filter(keep);
+  const resolved = wanted.flatMap((entry) => {
     const handle = prerun
       .resolve({ field: entry.field, allowPermanentAbsence: true })
       ?.getRemoteFileHandle();
     return handle ? [{ entry, handle }] : [];
   });
+  if (resolved.length !== wanted.length) return [];
 
   const used = new Set<string>();
   return resolved.map(({ entry, handle }) => {
