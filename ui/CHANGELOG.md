@@ -1,5 +1,16 @@
 # @platforma-open/milaboratories.fastq-reader.ui
 
+## 1.2.0
+
+### Minor Changes
+
+- 8cf759b: Add "Download whole dataset" button for the original files of every sample; name download archives after the sample / dataset; show the selected sample in the sidebar subtitle
+
+### Patch Changes
+
+- Updated dependencies [8cf759b]
+  - @platforma-open/milaboratories.fastq-reader.model@1.2.0
+
 ## 1.1.1
 
 ### Patch Changes
