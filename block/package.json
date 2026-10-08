@@ -42,16 +42,19 @@
       "ui": "@platforma-open/milaboratories.fastq-reader.ui/dist"
     },
     "meta": {
-      "title": "FASTQ Reader",
+      "title": "Raw Data Reader",
       "logo": "file:../logos/block-logo.png",
       "url": "https://github.com/platforma-open/milaboratories.fastq-reader",
       "support": "mailto:support@milaboratories.com",
-      "description": "Inspect raw reads of an imported FASTQ/FASTA dataset, one sample at a time.",
+      "description": "Inspect raw reads of an imported FASTQ/FASTA dataset, or the Sanger traces of an AB1 dataset, one sample at a time.",
       "longDescription": "file:../docs/description.md",
       "changelog": "file:../CHANGELOG.md",
       "tags": [
         "fastq",
         "fasta",
+        "ab1",
+        "sanger",
+        "chromatogram",
         "reads",
         "qc",
         "viewer"
