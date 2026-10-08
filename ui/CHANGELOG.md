@@ -1,5 +1,16 @@
 # @platforma-open/milaboratories.fastq-reader.ui
 
+## 1.3.0
+
+### Minor Changes
+
+- ce69c85: Rename to Raw Data Reader and add Sanger AB1 support: pick one trace of a sample to view its chromatogram (dye traces, base calls, quality) or base-call sequence, and download it as .ab1 or FASTQ. The whole dataset downloads in its original format.
+
+### Patch Changes
+
+- Updated dependencies [ce69c85]
+  - @platforma-open/milaboratories.fastq-reader.model@1.3.0
+
 ## 1.2.0
 
 ### Minor Changes
