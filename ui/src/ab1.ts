@@ -25,6 +25,8 @@ export type Ab1Trace = {
 };
 
 type DirEntry = {
+  /** Tag name and number, e.g. "PBAS2" — for error messages. */
+  tag: string;
   elementType: number;
   elementSize: number;
   numElements: number;
@@ -64,8 +66,9 @@ function readDirectory(view: DataView): Map<string, DirEntry> {
       view.getUint8(off + 2),
       view.getUint8(off + 3),
     );
-    const num = view.getInt32(off + 4);
-    entries.set(`${name}${num}`, {
+    const tag = `${name}${view.getInt32(off + 4)}`;
+    entries.set(tag, {
+      tag,
       elementType: view.getInt16(off + 8),
       elementSize: view.getInt16(off + 10),
       numElements: view.getInt32(off + 12),
@@ -80,9 +83,33 @@ function readDirectory(view: DataView): Map<string, DirEntry> {
 /** Byte range of an entry's payload, resolving the inline (≤ 4 bytes) case. */
 function payload(view: DataView, e: DirEntry): { start: number; size: number } {
   const start = e.dataSize <= 4 ? e.entryOffset + 20 : e.dataOffset;
-  if (start < 0 || start + e.dataSize > view.byteLength)
-    throw new Ab1ParseError("AB1 tag data points outside the file.");
+  if (e.dataSize < 0 || start < 0 || start + e.dataSize > view.byteLength)
+    throw new Ab1ParseError(`AB1 tag ${e.tag} points outside the file.`);
   return { start, size: e.dataSize };
+}
+
+/**
+ * Payload of a tag holding `numElements` elements of `elementSize` bytes. The
+ * file states the count independently of the payload size, so the count is
+ * checked against the payload before anything is allocated or read: a
+ * malformed count must neither request a huge array nor read other tags' bytes.
+ */
+function elements(
+  view: DataView,
+  e: DirEntry,
+  elementSize: number,
+): { start: number; count: number } {
+  const { start, size } = payload(view, e);
+  if (e.elementSize !== elementSize || e.numElements < 0 || e.numElements * elementSize > size)
+    throw new Ab1ParseError(`AB1 tag ${e.tag} has an inconsistent size.`);
+  return { start, count: e.numElements };
+}
+
+/** Start of a payload that must hold at least `minSize` bytes (dates, times, longs). */
+function fixed(view: DataView, e: DirEntry, minSize: number): number {
+  const { start, size } = payload(view, e);
+  if (size < minSize) throw new Ab1ParseError(`AB1 tag ${e.tag} is too short.`);
+  return start;
 }
 
 function readBytes(view: DataView, e: DirEntry): Uint8Array {
@@ -97,9 +124,9 @@ function readChars(view: DataView, e: DirEntry): string {
 }
 
 function readShorts(view: DataView, e: DirEntry): Int16Array {
-  const { start } = payload(view, e);
-  const out = new Int16Array(e.numElements);
-  for (let i = 0; i < e.numElements; i++) out[i] = view.getInt16(start + i * 2);
+  const { start, count } = elements(view, e, 2);
+  const out = new Int16Array(count);
+  for (let i = 0; i < count; i++) out[i] = view.getInt16(start + i * 2);
   return out;
 }
 
@@ -117,7 +144,7 @@ function readString(view: DataView, e: DirEntry): string {
 }
 
 function readDate(view: DataView, e: DirEntry): string {
-  const { start } = payload(view, e);
+  const start = fixed(view, e, 4);
   const y = view.getInt16(start);
   const m = view.getUint8(start + 2);
   const d = view.getUint8(start + 3);
@@ -125,7 +152,7 @@ function readDate(view: DataView, e: DirEntry): string {
 }
 
 function readTime(view: DataView, e: DirEntry): string {
-  const { start } = payload(view, e);
+  const start = fixed(view, e, 3);
   const parts = [view.getUint8(start), view.getUint8(start + 1), view.getUint8(start + 2)];
   return parts.map((p) => String(p).padStart(2, "0")).join(":");
 }
@@ -149,14 +176,27 @@ function readMetaValue(view: DataView, e: DirEntry): string | undefined {
     case 18:
     case 19:
       return readString(view, e);
-    case 4:
-      return String(readShorts(view, e)[0]);
+    case 4: {
+      const values = readShorts(view, e);
+      return values.length > 0 ? String(values[0]) : undefined;
+    }
     case 5:
-      return String(view.getInt32(payload(view, e).start));
+      return String(view.getInt32(fixed(view, e, 4)));
     case 10:
       return readDate(view, e);
     default:
       return undefined;
+  }
+}
+
+/** Metadata is informational: a malformed tag is skipped rather than failing a
+ *  trace whose calls and traces read fine. */
+function optional<T>(read: () => T): T | undefined {
+  try {
+    return read();
+  } catch (err) {
+    if (err instanceof Ab1ParseError) return undefined;
+    throw err;
   }
 }
 
@@ -198,12 +238,13 @@ export function parseAb1(bytes: Uint8Array): Ab1Trace {
   for (const { tag, label } of META_TAGS) {
     const e = dir.get(tag);
     if (!e) continue;
-    let value = readMetaValue(view, e);
+    let value = optional(() => readMetaValue(view, e));
     if (value === undefined || value === "") continue;
     // Run date and time are stored as separate tags; show them together.
     if (tag === "RUND1" || tag === "RUND2") {
-      const time = dir.get(tag === "RUND1" ? "RUNT1" : "RUNT2");
-      if (time) value = `${value} ${readTime(view, time)}`;
+      const timeEntry = dir.get(tag === "RUND1" ? "RUNT1" : "RUNT2");
+      const time = timeEntry && optional(() => readTime(view, timeEntry));
+      if (time) value = `${value} ${time}`;
     }
     meta.push({ label, value });
   }

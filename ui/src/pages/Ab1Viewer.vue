@@ -186,14 +186,20 @@ function onDownloadAb1() {
   downloadBlob(`${fileBase.value}.ab1`, new Blob([bytes.value as BlobPart]));
 }
 
-function onDownloadFastq() {
+// The parser keeps qualities only when there is one per base call; without
+// them the calls are saved as FASTA rather than FASTQ with made-up scores.
+const hasQuality = computed(() => (trace.value?.quality.length ?? 0) > 0);
+
+function onDownloadCalls() {
   const t = trace.value;
   if (!t) return;
-  const qual =
-    t.quality.length > 0
-      ? t.quality.map((q) => String.fromCharCode(Math.min(q, 93) + 33)).join("")
-      : "I".repeat(t.sequence.length);
-  downloadText(`${fileBase.value}.fastq`, `@${fileBase.value}\n${t.sequence}\n+\n${qual}\n`);
+  const name = fileBase.value;
+  if (!hasQuality.value) {
+    downloadText(`${name}.fasta`, `>${name}\n${t.sequence}\n`);
+    return;
+  }
+  const qual = t.quality.map((q) => String.fromCharCode(Math.min(q, 93) + 33)).join("");
+  downloadText(`${name}.fastq`, `@${name}\n${t.sequence}\n+\n${qual}\n`);
 }
 </script>
 
@@ -224,8 +230,8 @@ function onDownloadFastq() {
         Download .ab1
         <template #append><PlMaskIcon24 name="download" /></template>
       </PlBtnGhost>
-      <PlBtnGhost :disabled="!trace" @click="onDownloadFastq">
-        Download FASTQ
+      <PlBtnGhost :disabled="!trace" @click="onDownloadCalls">
+        Download {{ trace && !hasQuality ? "FASTA" : "FASTQ" }}
         <template #append><PlMaskIcon24 name="download" /></template>
       </PlBtnGhost>
     </div>
@@ -303,7 +309,10 @@ function onDownloadFastq() {
       </div>
 
       <div v-else class="sequence">
-        <div class="seq-head">&gt;{{ fileBase }} · bases below Q20 dimmed</div>
+        <div class="seq-head">
+          &gt;{{ fileBase }} ·
+          {{ hasQuality ? "bases below Q20 dimmed" : "no per-base quality in this trace" }}
+        </div>
         <pre
           class="seq-pre"
         ><template v-for="line in sequenceLines" :key="line.pos"><span class="seq-pos">{{ String(line.pos).padStart(5, " ") }}  </span><template v-for="(r, k) in line.runs" :key="k"><span :class="{ 'seq-low': r.low }">{{ r.text }}</span></template>
