@@ -28,7 +28,7 @@ wf.body(func(args) {
 	spec := dataset.spec
 
 	// Locate the read-index axis by name (position varies by dataset shape); fasta
-	// has none, so its single file is keyed "R1". Mirrors main.tpl.tengo.
+	// and ab1 have none, so their files are keyed "R1". Mirrors main.tpl.tengo.
 	readIndexPos := -1
 	for i, ax in spec.axesSpec {
 		if ax.name == "pl7.app/sequencing/readIndex" {
@@ -50,8 +50,9 @@ wf.body(func(args) {
 		key := json.decode(sKey)
 		readIndex := readIndexPos >= 0 ? string(key[readIndexPos]) : "R1"
 
-		// Key parts other than sample id and read index (e.g. lane) keep multilane
-		// files distinguishable in a download.
+		// Key parts other than sample id and read index (e.g. lane, or an ab1
+		// trace's tag values) keep files of one sample distinguishable — in a
+		// download, and in the model's ab1 trace picker.
 		extra := []
 		for p, part in key {
 			if p != 0 && p != readIndexPos {

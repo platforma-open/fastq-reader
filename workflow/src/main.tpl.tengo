@@ -1,4 +1,4 @@
-// FASTQ Reader — extract a small selection of reads for one sample and expose
+// Raw Data Reader — extract a small selection of reads for one sample and expose
 // them to the UI. Only the selected sample's read files are processed; the
 // extraction tool streams the input and never reads/emits whole files.
 
@@ -32,6 +32,9 @@ wf.body(func(args) {
 
 	extension := spec.domain["pl7.app/fileExtension"] // fastq | fastq.gz | fasta | fasta.gz
 	ll.assert(!is_undefined(extension), "dataset has no pl7.app/fileExtension domain")
+	// AB1 traces are parsed by the UI from the pre-run's file handles; the model
+	// refuses to run on them, so reaching here means a stale args snapshot.
+	ll.assert(extension != "ab1", "AB1 traces are shown without running the block")
 	isFasta := extension == "fasta" || extension == "fasta.gz"
 	format := isFasta ? "fasta" : "fastq"
 	gzipped := extension == "fastq.gz" || extension == "fasta.gz"

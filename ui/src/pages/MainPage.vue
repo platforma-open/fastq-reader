@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { PlBlockPage, PlBtnGhost, PlMaskIcon24, PlSlideModal } from "@platforma-sdk/ui-vue";
 import { watchEffect } from "vue";
+import { BLOCK_TITLE } from "@platforma-open/milaboratories.fastq-reader.model";
 import { useApp } from "../app";
+import Ab1Viewer from "./Ab1Viewer.vue";
 import ReadViewer from "./ReadViewer.vue";
 import SettingsPanel from "./SettingsPanel.vue";
 
@@ -23,7 +25,7 @@ watchEffect(() => {
 
 <template>
   <PlBlockPage>
-    <template #title>FASTQ Reader</template>
+    <template #title>{{ BLOCK_TITLE }}</template>
     <template #append>
       <PlBtnGhost @click.stop="app.model.data.settingsOpen = true">
         Settings
@@ -33,7 +35,8 @@ watchEffect(() => {
       </PlBtnGhost>
     </template>
 
-    <ReadViewer />
+    <Ab1Viewer v-if="app.model.outputs.isAb1" />
+    <ReadViewer v-else />
   </PlBlockPage>
 
   <PlSlideModal v-model="app.model.data.settingsOpen" :shadow="true">

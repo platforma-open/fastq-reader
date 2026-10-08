@@ -9,9 +9,17 @@ const MAX_READS = 5000;
 /** Default number of reads scanned for search / gzip-random modes (see workflow). */
 const DEFAULT_SCAN_CAP = 2_000_000;
 
-const FASTQ_EXTENSIONS = new Set(["fastq", "fastq.gz", "fasta", "fasta.gz"]);
+const READ_EXTENSIONS = new Set(["fastq", "fastq.gz", "fasta", "fasta.gz"]);
 const FASTA_EXTENSIONS = new Set(["fasta", "fasta.gz"]);
+/** Sanger chromatograms — one trace per file, parsed and shown by the UI. */
+const AB1_EXTENSION = "ab1";
 const READ_INDEX_AXIS = "pl7.app/sequencing/readIndex";
+const TAG_AXIS = "pl7.app/sequencing/tag";
+
+export const BLOCK_TITLE = "Raw Data Reader";
+
+/** Identity of a dataset option, for the snapshot lookups below. */
+export const refKey = (ref: PlRef): string => `${ref.blockId}/${ref.name}`;
 
 /**
  * Read indices a dataset exposes. fastq variants carry a `pl7.app/sequencing/readIndex`
@@ -46,6 +54,12 @@ export type BlockData = {
   // Human-readable label of the selected sample, stored by the UI on selection.
   // The subtitle reads this (the sidebar render ctx can't resolve labels itself).
   sampleLabel?: string;
+  // Snapshot of "the picked dataset is AB1", written by the UI together with
+  // inputRef (args may read only data, and AB1 datasets have nothing to run).
+  inputIsAb1?: boolean;
+  // AB1: the trace being shown — JSON array of the sample's tag values (the
+  // pre-run's `extra` key parts). Unset or stale → the sample's first trace.
+  traceKey?: string;
 
   selectionMode: SelectionMode;
   // range mode
@@ -63,6 +77,9 @@ export type BlockData = {
   pairedView: "R1" | "R2" | "both";
   contentView: "full" | "sequence";
   settingsOpen: boolean;
+  // AB1 view-only state
+  ab1View?: "chromatogram" | "sequence";
+  ab1Zoom?: "compact" | "normal" | "wide";
 };
 
 /** Projected workflow input. */
@@ -98,6 +115,9 @@ export type ReadsResult = {
 };
 
 export type SampleOption = { value: string; label: string };
+
+/** One AB1 trace of the selected sample. `value` is the `traceKey`. */
+export type TraceOption = { value: string; label: string };
 
 /**
  * One wrapped original file, as published by the pre-run's `fileIndex`. `extra`
@@ -135,6 +155,9 @@ function collectRawExports(
   const spec = ctx.resultPool.getPColumnSpecByRef(ctx.data.inputRef);
   const ext = spec?.domain?.["pl7.app/fileExtension"] ?? "fastq";
   const labels = spec ? (ctx.resultPool.findLabels(spec.axesSpec[0]) ?? {}) : {};
+  // The pre-run keys files of datasets without a read-index axis (fasta, ab1)
+  // as "R1"; that is not part of the data, so keep it out of the file names.
+  const hasReadIndex = spec?.axesSpec.some((a) => a.name === READ_INDEX_AXIS) ?? true;
 
   // All or nothing: handles may be absent while the pre-run is still computing,
   // and publishing only the ready ones would let the user save an archive that
@@ -151,7 +174,7 @@ function collectRawExports(
   const used = new Set<string>();
   return resolved.map(({ entry, handle }) => {
     const base = [String(labels[entry.sampleId] ?? entry.sampleId), ...(entry.extra ?? [])]
-      .concat(entry.readIndex)
+      .concat(hasReadIndex ? [entry.readIndex] : [])
       .map(safeNamePart)
       .filter((part) => part !== "")
       .join("_");
@@ -168,6 +191,55 @@ function collectRawExports(
 
     return { sampleId: entry.sampleId, readIndex: entry.readIndex, fileName, handle };
   });
+}
+
+/** Whether a dataset column holds AB1 traces. */
+const isAb1Spec = (spec: { domain?: Record<string, string> } | undefined): boolean =>
+  spec?.domain?.["pl7.app/fileExtension"] === AB1_EXTENSION;
+
+/**
+ * The AB1 traces of the selected sample, from the pre-run's `fileIndex`. A
+ * sample can hold several traces (e.g. forward and reverse primer); they are
+ * told apart by the tag axes, whose values are the entry's `extra` parts.
+ */
+function sampleTraces(
+  ctx: BlockRenderCtx<BlockArgs, BlockData>,
+): { option: TraceOption; field: string }[] | undefined {
+  const { inputRef, sampleId } = ctx.data;
+  if (!inputRef || !sampleId || !ctx.prerun) return undefined;
+  const spec = ctx.resultPool.getPColumnSpecByRef(inputRef);
+  if (!isAb1Spec(spec)) return undefined;
+
+  const index = ctx.prerun
+    .resolve({ field: "fileIndex", allowPermanentAbsence: true })
+    ?.getDataAsJson<RawFileIndexEntry[]>();
+  if (!index) return undefined;
+
+  // Tag names, in the order the key parts follow (axes after the sample axis).
+  const tagNames = (spec?.axesSpec ?? [])
+    .slice(1)
+    .map((a) => a.domain?.[TAG_AXIS] ?? a.annotations?.["pl7.app/label"] ?? a.name);
+
+  return index
+    .filter((e) => e.sampleId === sampleId)
+    .map((e) => {
+      const parts = e.extra ?? [];
+      const label =
+        parts.length === 0
+          ? "Trace"
+          : parts.length === 1
+            ? parts[0]
+            : parts.map((v, i) => `${tagNames[i] ?? `Tag ${i + 1}`}: ${v}`).join(", ");
+      return { option: { value: JSON.stringify(parts), label }, field: e.field };
+    })
+    .sort((a, b) => a.option.label.localeCompare(b.option.label));
+}
+
+/** The trace the user picked, or the sample's first one if none / stale. */
+function selectedTrace(ctx: BlockRenderCtx<BlockArgs, BlockData>) {
+  const traces = sampleTraces(ctx);
+  if (!traces || traces.length === 0) return undefined;
+  return traces.find((t) => t.option.value === ctx.data.traceKey) ?? traces[0];
 }
 
 const parseNumbers = (text: string): number[] => {
@@ -210,6 +282,9 @@ export const platforma = BlockModelV3.create(dataModel)
 
   .args<BlockArgs>((data) => {
     if (!data.inputRef) throw new Error("Select a dataset");
+    // AB1 traces are parsed and shown by the UI straight from the pre-run's
+    // file handles — there is nothing for the main workflow to compute.
+    if (data.inputIsAb1) throw new Error("AB1 traces are shown without running the block");
     if (!data.sampleId) throw new Error("Select a sample");
 
     const mode = data.selectionMode;
@@ -260,7 +335,7 @@ export const platforma = BlockModelV3.create(dataModel)
     return { inputRef: data.inputRef };
   })
 
-  // Dataset dropdown — same filter as fastqc, widened to fasta.
+  // Dataset dropdown — same filter as fastqc, widened to fasta and AB1.
   .output("inputOptions", (ctx) =>
     ctx.resultPool.getOptions((v) => {
       if (!isPColumnSpec(v)) return false;
@@ -269,10 +344,42 @@ export const platforma = BlockModelV3.create(dataModel)
         v.name === "pl7.app/sequencing/data" &&
         (v.valueType as string) === "File" &&
         ext !== undefined &&
-        FASTQ_EXTENSIONS.has(ext)
+        (READ_EXTENSIONS.has(ext) || ext === AB1_EXTENSION)
       );
     }),
   )
+
+  // Which dataset options are AB1, keyed by `refKey`. The UI snapshots the
+  // picked one into `data.inputIsAb1` on selection, for the args lambda.
+  .output("ab1Inputs", (ctx): string[] =>
+    ctx.resultPool
+      .getOptions((v) => isPColumnSpec(v) && v.name === "pl7.app/sequencing/data" && isAb1Spec(v))
+      .map((o) => refKey(o.ref)),
+  )
+
+  // Whether the selected dataset holds AB1 traces — switches the UI to the
+  // chromatogram viewer. Read from the spec, so it's always current.
+  .output("isAb1", (ctx): boolean | undefined => {
+    if (!ctx.data.inputRef) return undefined;
+    return isAb1Spec(ctx.resultPool.getPColumnSpecByRef(ctx.data.inputRef));
+  })
+
+  // AB1: the selected sample's traces, for the trace picker.
+  .output("traceOptions", (ctx): TraceOption[] | undefined =>
+    sampleTraces(ctx)?.map((t) => t.option),
+  )
+
+  // AB1: the trace being shown — its key, label, and a local handle to the
+  // file's bytes, which the UI fetches and parses (one file, a few hundred KB).
+  // Only the shown trace is downloaded; the rest stay on the backend.
+  .output("selectedTrace", (ctx) => {
+    const trace = selectedTrace(ctx);
+    if (!trace) return undefined;
+    const file = ctx.prerun
+      ?.resolve({ field: trace.field, allowPermanentAbsence: true })
+      ?.getFileHandle();
+    return { key: trace.option.value, label: trace.option.label, file };
+  })
 
   // Sample dropdown — only the samples that belong to the chosen dataset.
   // `findLabels` is project-wide (every value of the sample-id axis across all
@@ -364,7 +471,7 @@ export const platforma = BlockModelV3.create(dataModel)
   // the platform substitutes the literal string "Invalid title" — which is what
   // this block used to show. Keep the title constant and put the per-instance
   // detail in the subtitle, read defensively from `data` only.
-  .title(() => "FASTQ Reader")
+  .title(() => BLOCK_TITLE)
 
   // Sample's human-readable label, stored by the UI on selection (the sidebar
   // context can't resolve axis labels itself).

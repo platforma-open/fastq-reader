@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { SelectionMode } from "@platforma-open/milaboratories.fastq-reader.model";
+import { refKey } from "@platforma-open/milaboratories.fastq-reader.model";
 import type { PlRef } from "@platforma-sdk/model";
 import type { ListOption } from "@platforma-sdk/ui-vue";
 import {
@@ -27,16 +28,27 @@ const sampleOptions = computed(() => app.model.outputs.sampleOptions ?? []);
 
 function onDatasetUpdate(ref: PlRef | undefined) {
   app.model.data.inputRef = ref;
+  // Snapshot the dataset kind for the args lambda, which can read only data:
+  // AB1 datasets are viewed without a Run.
+  app.model.data.inputIsAb1 = ref
+    ? (app.model.outputs.ab1Inputs ?? []).includes(refKey(ref))
+    : undefined;
   // Sample ids are dataset-scoped — the previous pick is meaningless for a new dataset.
   app.model.data.sampleId = undefined;
   app.model.data.sampleLabel = undefined;
+  app.model.data.traceKey = undefined;
 }
+
+// Read-selection controls apply to FASTQ/FASTA only. Uses the live spec-derived
+// output, not the snapshot, so the form never disagrees with the viewer.
+const isAb1 = computed(() => app.model.outputs.isAb1 ?? false);
 
 // Store the sample's label alongside its id so the sidebar subtitle can show a
 // human-readable name (the sidebar render context can't resolve labels itself).
 function onSampleUpdate(id: string | undefined) {
   app.model.data.sampleId = id;
   app.model.data.sampleLabel = sampleOptions.value.find((o) => o.value === id)?.label;
+  app.model.data.traceKey = undefined;
 }
 </script>
 
@@ -44,10 +56,12 @@ function onSampleUpdate(id: string | undefined) {
   <PlDropdownRef
     :model-value="app.model.data.inputRef"
     :options="inputOptions"
-    label="FASTQ / FASTA dataset"
+    label="Dataset"
     @update:model-value="onDatasetUpdate"
   >
-    <template #tooltip>Pick a sequencing dataset imported with the Samples & Data block.</template>
+    <template #tooltip>
+      A FASTQ, FASTA or Sanger AB1 dataset imported with the Samples & Data block.
+    </template>
   </PlDropdownRef>
 
   <PlDropdown
@@ -57,74 +71,78 @@ function onSampleUpdate(id: string | undefined) {
     @update:model-value="onSampleUpdate"
   />
 
-  <PlDropdown v-model="app.model.data.selectionMode" :options="modeOptions" label="Selection" />
+  <template v-if="!isAb1">
+    <PlDropdown v-model="app.model.data.selectionMode" :options="modeOptions" label="Selection" />
 
-  <!-- Range -->
-  <template v-if="app.model.data.selectionMode === 'range'">
-    <PlNumberField
-      v-model="app.model.data.count"
-      label="Number of reads"
-      :minValue="1"
-      :maxValue="5000"
-    />
-    <PlNumberField
-      v-if="!app.model.data.randomize"
-      v-model="app.model.data.startFrom"
-      label="Start from read #"
-      :minValue="1"
-    />
-    <PlCheckbox v-model="app.model.data.randomize">
-      Randomize — sample reads from across the file instead of sequentially
-    </PlCheckbox>
-  </template>
+    <!-- Range -->
+    <template v-if="app.model.data.selectionMode === 'range'">
+      <PlNumberField
+        v-model="app.model.data.count"
+        label="Number of reads"
+        :minValue="1"
+        :maxValue="5000"
+      />
+      <PlNumberField
+        v-if="!app.model.data.randomize"
+        v-model="app.model.data.startFrom"
+        label="Start from read #"
+        :minValue="1"
+      />
+      <PlCheckbox v-model="app.model.data.randomize">
+        Randomize — sample reads from across the file instead of sequentially
+      </PlCheckbox>
+    </template>
 
-  <!-- Read numbers -->
-  <PlTextField
-    v-if="app.model.data.selectionMode === 'numbers'"
-    v-model="app.model.data.readNumbers"
-    label="Read numbers"
-    :clearable="() => ''"
-  >
-    <template #tooltip
-      >1-based read positions, separated by commas or spaces (e.g. 1, 5, 42).</template
+    <!-- Read numbers -->
+    <PlTextField
+      v-if="app.model.data.selectionMode === 'numbers'"
+      v-model="app.model.data.readNumbers"
+      label="Read numbers"
+      :clearable="() => ''"
     >
-  </PlTextField>
+      <template #tooltip
+        >1-based read positions, separated by commas or spaces (e.g. 1, 5, 42).</template
+      >
+    </PlTextField>
 
-  <!-- Read headers -->
-  <PlTextArea
-    v-if="app.model.data.selectionMode === 'headers'"
-    v-model="app.model.data.readHeaders"
-    label="Read headers"
-    :rows="4"
-  >
-    <template #tooltip>
-      One header per line (or comma-separated). Matches the full header or the read id (first token)
-      exactly.
-    </template>
-  </PlTextArea>
+    <!-- Read headers -->
+    <PlTextArea
+      v-if="app.model.data.selectionMode === 'headers'"
+      v-model="app.model.data.readHeaders"
+      label="Read headers"
+      :rows="4"
+    >
+      <template #tooltip>
+        One header per line (or comma-separated). Matches the full header or the read id (first
+        token) exactly.
+      </template>
+    </PlTextArea>
 
-  <!-- Sequence pattern -->
-  <PlTextField
-    v-if="app.model.data.selectionMode === 'pattern'"
-    v-model="app.model.data.pattern"
-    label="Sequence pattern"
-    :clearable="() => ''"
-  >
-    <template #tooltip>Reads whose sequence contains this subsequence (case-insensitive).</template>
-  </PlTextField>
+    <!-- Sequence pattern -->
+    <PlTextField
+      v-if="app.model.data.selectionMode === 'pattern'"
+      v-model="app.model.data.pattern"
+      label="Sequence pattern"
+      :clearable="() => ''"
+    >
+      <template #tooltip
+        >Reads whose sequence contains this subsequence (case-insensitive).</template
+      >
+    </PlTextField>
 
-  <!-- Scan limit — only applies to modes that scan into the file: read numbers,
-       headers, pattern, and randomized range (gzip has no random access). -->
-  <PlNumberField
-    v-if="app.model.data.selectionMode !== 'range' || app.model.data.randomize"
-    v-model="app.model.data.scanCap"
-    label="Scan limit (reads)"
-    :minValue="1"
-  >
-    <template #tooltip>
-      Maximum number of reads scanned when searching or random-sampling. Higher is more thorough but
-      slower on large files. If it exceeds the file's read count, the whole file is scanned. Does
-      not affect sequential range.
-    </template>
-  </PlNumberField>
+    <!-- Scan limit — only applies to modes that scan into the file: read numbers,
+         headers, pattern, and randomized range (gzip has no random access). -->
+    <PlNumberField
+      v-if="app.model.data.selectionMode !== 'range' || app.model.data.randomize"
+      v-model="app.model.data.scanCap"
+      label="Scan limit (reads)"
+      :minValue="1"
+    >
+      <template #tooltip>
+        Maximum number of reads scanned when searching or random-sampling. Higher is more thorough
+        but slower on large files. If it exceeds the file's read count, the whole file is scanned.
+        Does not affect sequential range.
+      </template>
+    </PlNumberField>
+  </template>
 </template>

@@ -1,16 +1,11 @@
 <script setup lang="ts">
 import type { ReadRecord, ReadsResult } from "@platforma-open/milaboratories.fastq-reader.model";
-import type { ImportFileHandle } from "@platforma-sdk/model";
-import type { FileExportEntry, ListOption } from "@platforma-sdk/ui-vue";
-import {
-  PlAlert,
-  PlBtnExportArchive,
-  PlBtnGhost,
-  PlBtnGroup,
-  PlMaskIcon24,
-} from "@platforma-sdk/ui-vue";
+import type { ListOption } from "@platforma-sdk/ui-vue";
+import { PlAlert, PlBtnGhost, PlBtnGroup, PlMaskIcon24 } from "@platforma-sdk/ui-vue";
 import { computed } from "vue";
 import { useApp } from "../app";
+import { downloadBlob, downloadText, safeName, zipStored } from "../download";
+import RawDownloads from "./RawDownloads.vue";
 
 const app = useApp();
 
@@ -141,170 +136,10 @@ const downloadableIndices = computed<string[]>(() =>
 
 const canDownload = computed(() => downloadableIndices.value.length > 0);
 
-function safeName(s: string): string {
-  return s.replace(/[^A-Za-z0-9._-]+/g, "_");
-}
-
 function recordToText(rec: ReadRecord, fasta: boolean): string {
   if (fasta) return `>${rec.header}\n${rec.sequence}\n`;
   return `@${rec.header}\n${rec.sequence}\n+\n${rec.quality ?? ""}\n`;
 }
-
-function downloadBlob(filename: string, blob: Blob) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  // Anchor must be in the DOM for click() to reliably trigger a download, and
-  // revoking the URL too early can cancel it — defer the revoke.
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 10_000);
-}
-
-function downloadText(filename: string, text: string) {
-  downloadBlob(filename, new Blob([text], { type: "text/plain" }));
-}
-
-// --- minimal stored (uncompressed) ZIP -------------------------------------
-// Bundling the pair into one archive avoids the browser/Electron dropping the
-// second of two rapid downloads. Selections are small and bounded, so "stored"
-// (no compression) is fine and keeps this dependency-free.
-const CRC_TABLE = (() => {
-  const t = new Uint32Array(256);
-  for (let n = 0; n < 256; n++) {
-    let c = n;
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    t[n] = c >>> 0;
-  }
-  return t;
-})();
-
-function crc32(bytes: Uint8Array): number {
-  let c = 0xffffffff;
-  for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
-  return (c ^ 0xffffffff) >>> 0;
-}
-
-function concatBytes(parts: Uint8Array[]): Uint8Array {
-  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
-  let o = 0;
-  for (const p of parts) {
-    out.set(p, o);
-    o += p.length;
-  }
-  return out;
-}
-
-function zipStored(files: { name: string; data: Uint8Array }[]): Blob {
-  const enc = new TextEncoder();
-  const u16 = (v: number) => new Uint8Array([v & 0xff, (v >>> 8) & 0xff]);
-  const u32 = (v: number) =>
-    new Uint8Array([v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff]);
-
-  const local: Uint8Array[] = [];
-  const central: Uint8Array[] = [];
-  let offset = 0;
-
-  for (const f of files) {
-    const name = enc.encode(f.name);
-    const crc = crc32(f.data);
-    const size = f.data.length;
-    const lfh = concatBytes([
-      u32(0x04034b50),
-      u16(20),
-      u16(0),
-      u16(0),
-      u16(0),
-      u16(0),
-      u32(crc),
-      u32(size),
-      u32(size),
-      u16(name.length),
-      u16(0),
-      name,
-    ]);
-    local.push(lfh, f.data);
-    central.push(
-      concatBytes([
-        u32(0x02014b50),
-        u16(20),
-        u16(20),
-        u16(0),
-        u16(0),
-        u16(0),
-        u16(0),
-        u32(crc),
-        u32(size),
-        u32(size),
-        u16(name.length),
-        u16(0),
-        u16(0),
-        u16(0),
-        u16(0),
-        u32(0),
-        u32(offset),
-        name,
-      ]),
-    );
-    offset += lfh.length + size;
-  }
-
-  const centralSize = central.reduce((n, c) => n + c.length, 0);
-  const eocd = concatBytes([
-    u32(0x06054b50),
-    u16(0),
-    u16(0),
-    u16(files.length),
-    u16(files.length),
-    u32(centralSize),
-    u32(offset),
-    u16(0),
-  ]);
-  const all = concatBytes([...local, ...central, eocd]);
-  return new Blob([all as BlobPart], { type: "application/zip" });
-}
-
-// Original, full-size files — streamed from the backend by PlBtnExportArchive
-// (never built client-side; they can be many GB). `rawFileExports` covers the
-// open sample, `datasetFileExports` every sample of the selected dataset.
-function toFileExports(
-  entries: { fileName: string; handle?: FileExportEntry["blobHandle"] }[] | undefined,
-): FileExportEntry[] {
-  const out: FileExportEntry[] = [];
-  for (const e of entries ?? []) {
-    if (!e.handle) continue; // narrows away the undefined handle
-    out.push({
-      importHandle: e.fileName as ImportFileHandle,
-      blobHandle: e.handle,
-      fileName: e.fileName,
-    });
-  }
-  return out;
-}
-
-const rawFileExports = computed<FileExportEntry[]>(() =>
-  toFileExports(app.model.outputs.rawFileExports),
-);
-
-const datasetFileExports = computed<FileExportEntry[]>(() =>
-  toFileExports(app.model.outputs.datasetFileExports),
-);
-
-const sampleArchiveName = computed(() => `${safeName(sampleLabel.value)}-raw-files.zip`);
-
-// Names the dataset archive. The dataset's own label lives on the dropdown
-// option, not on its spec, so it is read back from the options list.
-const datasetArchiveName = computed(() => {
-  const ref = app.model.data.inputRef;
-  const label = ref
-    ? (app.model.outputs.inputOptions ?? []).find(
-        (o) => o.ref.blockId === ref.blockId && o.ref.name === ref.name,
-      )?.label
-    : undefined;
-  return `${safeName(label ?? "dataset")}-raw-files.zip`;
-});
 
 // Builds FASTQ (or FASTA) from the extracted reads. A single read index is
 // downloaded as one file; paired data (both R1 and R2) is bundled into one zip
@@ -335,25 +170,9 @@ function onDownload() {
 </script>
 
 <template>
-  <!-- Raw-file downloads come from the pre-run, so they're available as soon as
-       a dataset is selected — no Run needed. Kept separate from the reads
-       controls (which require a Run). -->
-  <div v-if="datasetFileExports.length > 0" class="viewer-controls raw-bar">
-    <PlBtnExportArchive
-      v-if="rawFileExports.length > 0"
-      :file-exports="rawFileExports"
-      :suggested-file-name="sampleArchiveName"
-    >
-      Download raw files
-    </PlBtnExportArchive>
-
-    <PlBtnExportArchive
-      :file-exports="datasetFileExports"
-      :suggested-file-name="datasetArchiveName"
-    >
-      Download whole dataset ({{ datasetFileExports.length }} files)
-    </PlBtnExportArchive>
-  </div>
+  <!-- Original files come from the pre-run, so they're available as soon as a
+       dataset is selected — no Run needed. -->
+  <RawDownloads />
 
   <template v-if="reads">
     <div class="viewer-controls">
@@ -421,9 +240,6 @@ function onDownload() {
   font-weight: 400;
   font-size: 11px;
   color: var(--txt-03, #6b7280);
-}
-.raw-bar {
-  margin-bottom: 12px;
 }
 .reads-grid {
   max-height: 60vh;
